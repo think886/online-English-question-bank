@@ -1,0 +1,80 @@
+# ==========================================================================
+#  英语答题系统 - 应用配置
+#
+#  ⚠ YAML 三条铁律（新手最常踩）：
+#   1. 缩进只能用「空格」，绝对不能用 Tab，否则启动直接报错
+#   2. 冒号后面必须有一个空格，写 username:root 是错的，要写 username: root
+#   3. 层级靠缩进表达，同一层级的缩进量必须完全一致
+# ==========================================================================
+
+spring:
+  application:
+    name: English-question-bank
+
+  # ------------------------------------------------------------------
+  #  数据源：Spring Boot 看到 spring.datasource 就会自动创建
+  #  HikariCP 连接池，不需要手写任何 new 代码
+  # ------------------------------------------------------------------
+  datasource:
+    # URL 三个必需参数，缺一个就连不上：
+    #   characterEncoding=utf8          中文不乱码
+    #   serverTimezone=Asia/Shanghai    否则报时区错误
+    #   allowPublicKeyRetrieval=true    MySQL 8 默认用 caching_sha2_password
+    #       加密插件，非 SSL 连接下必须允许向服务器索取公钥，
+    #       否则报 "Public Key Retrieval is not allowed"（最高频的坑）
+    url: "jdbc:mysql://localhost:3306/english_question_bank?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true"
+
+    username: root
+
+    # ↓↓↓ 把「你的密码」换成 MySQL root 的真实密码 ↓↓↓
+    password: 123456
+
+    # MySQL 8 必须是 com.mysql.cj.jdbc.Driver（老版 com.mysql.jdbc.Driver 已废弃）
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+    hikari:
+      # 连接池名字，启动日志里看到它就说明池子建起来了
+      pool-name: EnglishQbPool
+
+# ======================================================================
+#  Actuator 健康检查
+#  启动后浏览器访问 http://localhost:8080/actuator/health
+#  返回 {"status":"UP"} 就是连上了；连不上返回 HTTP 503
+# ======================================================================
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      # 不加这行只能看到笼统的 UP/DOWN，看不到具体哪个组件挂了
+      show-details: always
+
+# ======================================================================
+#  MyBatis-Plus
+# ======================================================================
+mybatis-plus:
+  configuration:
+    # 下划线列名自动映射为驼峰属性：normalized_form -> normalizedForm
+    map-underscore-to-camel-case: true
+    # 控制台打印真实执行的 SQL（学习期开着，上线记得关掉）
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+
+  global-config:
+    # 关掉 MP 启动 banner，日志清爽些
+    banner: false
+    db-config:
+      # 主键策略：我们的表全是 AUTO_INCREMENT，必须设成 auto。
+      # MP 默认是 ASSIGN_ID（雪花算法），与自增主键不匹配，
+      # 不设这行插入时会往 id 塞一个 19 位雪花值，是高频踩坑点
+      id-type: auto
+
+# ======================================================================
+#  日志编码：JDK 17 在中文 Windows 上默认用 GBK 输出日志，
+#  中文会变乱码，排查清单会没法读。强制 UTF-8
+# ======================================================================
+logging:
+  charset:
+    console: UTF-8
+    file: UTF-8
