@@ -31,3 +31,14 @@ build/
 
 ### VS Code ###
 .vscode/
+
+### 词典原始数据 ###
+# ECDICT 的 ecdict.csv 有 65MB，绝不能进 git 历史
+# （即便之后删除，文件仍永久留在历史里，仓库会一直背上 65MB）
+tools/ecdict.csv
+tools/*.csv.large
+tools/*.7z
+tools/*.zip
+
+# 保留测试用小样本
+!tools/_testdata/*.csv

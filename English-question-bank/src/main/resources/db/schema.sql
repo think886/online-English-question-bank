@@ -117,11 +117,14 @@ CREATE TABLE word (
   id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   headword       VARCHAR(64)     NOT NULL              COMMENT '词条原形，小写，如 run',
   display_form   VARCHAR(64)     NULL                  COMMENT '展示形式，如 Run',
-  phonetic_uk    VARCHAR(64)     NULL,
-  phonetic_us    VARCHAR(64)     NULL,
-  part_of_speech VARCHAR(16)     NULL                  COMMENT 'n./v./adj.',
-  translation    VARCHAR(1024)   NULL                  COMMENT '中文释义，多义项用 ; 分隔；NOT_FOUND 时为空',
-  exchange       VARCHAR(255)    NULL                  COMMENT '变形：过去式/复数等，便于反查原形',
+  phonetic_uk    VARCHAR(64)     NULL                  COMMENT '英式音标（ECDICT 只提供一套，偏英式）',
+  phonetic_us    VARCHAR(64)     NULL                  COMMENT '美式音标（ECDICT 无此数据，留空待补）',
+  part_of_speech VARCHAR(32)     NULL                  COMMENT 'n./v./adj.，从中文释义前缀提取',
+  translation    TEXT            NULL                  COMMENT '中文释义，多个义项用 ; 分隔；NOT_FOUND 时为空',
+  exchange       VARCHAR(255)    NULL                  COMMENT '词形变化：d:did/p:done/i:doing/3:does/s:复数/0:lemma',
+  tag            VARCHAR(64)     NULL                  COMMENT '考试大纲标签，空格分隔：zk/gk/cet4/cet6/ky/toefl/ielts/gre',
+  bnc            INT             NULL                  COMMENT 'BNC 语料库词频序号，越小越高频',
+  frq            INT             NULL                  COMMENT '当代语料库词频序号，越小越高频',
   lookup_status  VARCHAR(16)     NOT NULL DEFAULT 'LOCAL'
                  COMMENT 'LOCAL=本地词库 / API=外部回写 / PENDING=待补全 / NOT_FOUND=查无结果（写入空行防止反复请求外部接口）',
   source         VARCHAR(64)     NULL                  COMMENT '数据来源标识，如 ecdict / youdao / manual',
@@ -133,7 +136,8 @@ CREATE TABLE word (
   updated_at     DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uk_word_headword (headword),
-  KEY idx_word_status (lookup_status)
+  KEY idx_word_status (lookup_status),
+  KEY idx_word_frq (frq)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='单词词典（本地主数据 + 外部接口缓存）';
 
 
@@ -253,9 +257,23 @@ CREATE TABLE user_word_mark (
   sentence        VARCHAR(1024)   NULL                  COMMENT '所在句子快照，复习时可看语境',
   char_start      INT             NOT NULL              COMMENT '在文本中的起始下标(0 基，含)',
   char_end        INT             NOT NULL              COMMENT '结束下标(不含)',
+
+  -- 生成列：把两个可空列归一为 0，仅供唯一键使用。
+  -- MySQL 唯一索引允许多行 NULL，不归一的话 session_id/question_id 为 NULL 时
+  -- 去重会静默失效（详见 alter-02-user-word-mark-dedup.sql 的说明）。
+  -- 基础列仍可空，因此外键约束照常生效。
+  --
+  -- ⚠ 必须是 VIRTUAL 而非 STORED：STORED 生成列的基础列上不允许带
+  --   ON DELETE CASCADE 的外键，而 fk_mark_session 正是 CASCADE。
+  --   VIRTUAL 不受此限制，且不物化、不占存储。
+  session_key     BIGINT UNSIGNED GENERATED ALWAYS AS (IFNULL(session_id, 0)) VIRTUAL
+                  COMMENT '生成列：session_id 的 NULL 归零版本',
+  question_key    BIGINT UNSIGNED GENERATED ALWAYS AS (IFNULL(question_id, 0)) VIRTUAL
+                  COMMENT '生成列：question_id 的 NULL 归零版本',
+
   created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  UNIQUE KEY uk_mark_pos (user_id, question_id, char_start, char_end),
+  UNIQUE KEY uk_mark_pos (user_id, session_key, source_field, question_key, char_start, char_end),
   KEY idx_mark_user_word (user_id, normalized_form),
   KEY idx_mark_session (session_id),
   KEY idx_mark_question (question_id),
@@ -273,7 +291,7 @@ CREATE TABLE user_vocabulary (
   normalized_form VARCHAR(64)     NOT NULL              COMMENT '归一化原形（小写）',
   word_id         BIGINT UNSIGNED NULL                  COMMENT '命中词典时的词条 id',
   display_form    VARCHAR(64)     NULL                  COMMENT '展示形式',
-  translation     VARCHAR(1024)   NULL                  COMMENT '标记时抓到的释义快照，词典更新不影响用户',
+  translation     TEXT            NULL                  COMMENT '标记时抓到的释义快照，词典更新不影响用户',
   mark_count      INT             NOT NULL DEFAULT 1    COMMENT '累计标记次数',
   first_marked_at DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
   last_marked_at  DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
