@@ -58,8 +58,18 @@ mybatis-plus:
   configuration:
     # 下划线列名自动映射为驼峰属性：normalized_form -> normalizedForm
     map-underscore-to-camel-case: true
-    # 控制台打印真实执行的 SQL（学习期开着，上线记得关掉）
-    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+    # 日志实现：交给 SLF4J，而不是 MyBatis 自带的 stdout 实现。
+    #
+    # 为什么不用 StdOutImpl：
+    #   StdOutImpl 的 isDebugEnabled() / isTraceEnabled() 恒返回 true，
+    #   且直接调 System.out.println —— 它会「绕过 logback」，
+    #   因此不受下面 logging.charset.console=UTF-8 的约束，
+    #   在中文 Windows 上按 GBK 输出，国际音标会被毁成 ?（实测 ?'b?nd?n）。
+    #   Slf4jImpl 走 logback，编码与级别都受控。
+    #
+    # ⚠ 代价：换成 Slf4jImpl 后，默认级别（INFO）下「一条 SQL 都看不到」，
+    #   必须在下方 logging.level 里把 mapper 包设成 debug 或 trace。
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
 
   global-config:
     # 关掉 MP 启动 banner，日志清爽些
@@ -78,3 +88,13 @@ logging:
   charset:
     console: UTF-8
     file: UTF-8
+
+  level:
+    # MyBatis 的 SQL 日志在这里控制（因为上面把 log-impl 换成了 Slf4jImpl）。
+    # logger 名 = Mapper 接口的全限定名。
+    #
+    #   debug → 打印 SQL 语句与参数（==>  Preparing: / ==> Parameters:）
+    #   trace → 额外打印结果集行值（<== Row: ...），非常啰嗦
+    #
+    # 上线前把这一行删掉或改成 info，即可关闭 SQL 日志，无需改代码。
+    org.example.englishquestionbank.mapper: debug

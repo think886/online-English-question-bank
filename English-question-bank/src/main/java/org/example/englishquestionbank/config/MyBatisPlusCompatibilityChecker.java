@@ -41,7 +41,10 @@ public class MyBatisPlusCompatibilityChecker implements CommandLineRunner {
             log.info("mybatis-plus-core 位置 : {}", jar);
 
             log.info("下划线转驼峰           : {}", config.isMapUnderscoreToCamelCase());
-            log.info("已注册 Mapper 数量     : {}", config.getMappedStatementNames().size());
+            // 区分两个概念：Mapper 接口数量 ≠ SQL 语句数量。
+            // 每个继承 BaseMapper 的接口会注册约 30 条内置语句，因此两者数值差距很大。
+            log.info("已注册 Mapper 接口数   : {}", config.getMapperRegistry().getMappers().size());
+            log.info("已注册 SQL 语句数      : {}", config.getMappedStatementNames().size());
             log.info("底层数据源             : {}", config.getEnvironment().getDataSource().getClass().getName());
 
             log.info("================ ✅ MyBatis-Plus 已正常装配 ================");
