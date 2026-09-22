@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+  user_word_mark 表的复杂 SQL。按项目规范（见根目录 AGENTS.md）：
+  upsert 属于复杂操作 —— 构造器表达不了 ON DUPLICATE KEY UPDATE。
+-->
+<mapper namespace="org.example.englishquestionbank.mapper.UserWordMarkMapper">
+
+    <!--
+      插入一条划词标记；若同一位置已标记过则<b>什么都不做</b>（幂等）。
+
+      去重依据是唯一键 uk_mark_pos(user_id, session_key, source_field, question_key, char_start, char_end)，
+      其中 session_key / question_key 是数据库的 VIRTUAL 生成列，把可空的 session_id / question_id
+      归一为 0 —— 这里不需要也不应该手工写它们。
+
+      ON DUPLICATE KEY UPDATE id = id 是一个「显式空操作」：
+        - 用 INSERT IGNORE 更短，但它会把数据截断、类型错误这类真实问题一并吞掉，排查时毫无痕迹
+        - 空操作写法则只有唯一键冲突才会被吸收，其它错误照常抛出
+
+      ⚠ 不要用本语句的返回值判断「是否新增了行」：
+         MySQL 的 affected-rows 在 ON DUPLICATE KEY UPDATE 下返回 1(插入)/2(更新)/0(无变化)，
+         但 JDBC 驱动默认开启 CLIENT_FOUND_ROWS（Connector/J 的 useAffectedRows=false），
+         会把「匹配到但未改变」也计成 1。
+         「是否新增」由 Service 在事务内先做存在性查询判断，本语句只作为并发兜底。
+    -->
+    <insert id="insertIgnoreDuplicate" useGeneratedKeys="true" keyProperty="m.id">
+        INSERT INTO user_word_mark
+            (user_id, session_id, question_id, passage_id, source_field,
+             word_id, surface_form, normalized_form, sentence, char_start, char_end)
+        VALUES
+            (#{m.userId}, #{m.sessionId}, #{m.questionId}, #{m.passageId}, #{m.sourceField},
+             #{m.wordId}, #{m.surfaceForm}, #{m.normalizedForm}, #{m.sentence},
+             #{m.charStart}, #{m.charEnd})
+        ON DUPLICATE KEY UPDATE id = id
+    </insert>
+
+</mapper>

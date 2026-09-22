@@ -92,9 +92,12 @@ public class MyBatisPlusQueryChecker implements CommandLineRunner {
         }
     }
 
-    /** 第 3 步：自定义 SQL 返回单个实体，这是划词查释义的核心路径。 */
+    /** 第 3 步：查询单个实体，这是划词查释义的核心路径。 */
     private void checkExactLookup() {
-        Word w = wordMapper.selectByHeadword(SAMPLE_WORD);
+        // 按项目规范：单表等值查询属于「简单操作」，用构造器在调用方表达，
+        // 不在 Mapper 接口里声明方法（见根目录 AGENTS.md 的 SQL 书写规范）。
+        Word w = wordMapper.selectOne(
+                Wrappers.<Word>lambdaQuery().eq(Word::getHeadword, SAMPLE_WORD));
         if (w == null) {
             log.warn("[3/4] 精确查询 '{}' : 词典中未找到（可能被筛选条件排除）", SAMPLE_WORD);
             return;

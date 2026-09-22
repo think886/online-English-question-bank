@@ -55,6 +55,13 @@ management:
 #  MyBatis-Plus
 # ======================================================================
 mybatis-plus:
+  # XML 映射文件的位置。这是 MyBatis-Plus 的默认值，显式写出来是为了让约定可见
+  # （见项目根目录 AGENTS.md 的「数据库 SQL 书写规范」）。
+  mapper-locations: classpath*:/mapper/**/*.xml
+
+  # 实体类别名包：有了它，XML 里可以写 resultType="Word" 而不必写全限定名
+  type-aliases-package: org.example.englishquestionbank.entity
+
   configuration:
     # 下划线列名自动映射为驼峰属性：normalized_form -> normalizedForm
     map-underscore-to-camel-case: true

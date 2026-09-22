@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+  user_vocabulary 表的复杂 SQL。按项目规范（见根目录 AGENTS.md）：
+  upsert 与「取前 N 条」都属于复杂操作，写 XML。
+-->
+<mapper namespace="org.example.englishquestionbank.mapper.UserVocabularyMapper">
+
+    <!--
+      生词本累加写入：不存在则插入（mark_count = 1），已存在则 mark_count + 1。
+
+      <b>为什么必须用 SQL 层的 upsert</b>：如果写成「先查后写」，
+      mark_count 的「读出来 +1 再写回」在并发下会丢更新。
+      ON DUPLICATE KEY UPDATE mark_count = mark_count + 1 是单条原子语句。
+
+      行别名写法（VALUES (...) AS new）是 MySQL 8.0.19+ 的语法，
+      替代已废弃的 VALUES() 函数。
+
+      ⚠ <b>用了行别名之后，ON DUPLICATE KEY UPDATE 里的列引用必须加限定</b>。
+        否则会报「Column 'xxx' in field list is ambiguous」——
+        因为 new 这个行别名带有与目标表同名的列，MySQL 无法判断裸列名指的是哪一个。
+        实测踩过：最初 mark_count = mark_count + 1 直接报错，
+        加上 user_vocabulary. 前缀后才通过。
+
+      语义说明：
+        user_vocabulary.mark_count + 1  → 取【已存在那行】的计数再加一（累加）
+        new.mark_count                  → 取【本次 VALUES 里】的值（这里是字面量 1）
+      两者含义完全不同，不能混用。
+
+      word_id / display_form / translation 用 COALESCE(new.x, user_vocabulary.x)：
+        优先采用本次的新值，新值为 null 时保留旧值。
+        这样「首次标记时词典还没收录、后来补上了」的场景能自动补全，
+        而不会因为新值为 null 把已有信息抹掉。
+    -->
+    <insert id="upsertMark">
+        INSERT INTO user_vocabulary
+            (user_id, normalized_form, word_id, display_form, translation,
+             mark_count, first_marked_at, last_marked_at, mastery, review_count)
+        VALUES
+            (#{userId}, #{normalizedForm}, #{wordId}, #{displayForm}, #{translation},
+             1, NOW(), NOW(), 0, 0) AS new
+        ON DUPLICATE KEY UPDATE
+            mark_count     = user_vocabulary.mark_count + 1,
+            last_marked_at = NOW(),
+            word_id        = COALESCE(new.word_id, user_vocabulary.word_id),
+            display_form   = COALESCE(new.display_form, user_vocabulary.display_form),
+            translation    = COALESCE(new.translation, user_vocabulary.translation)
+    </insert>
+
+    <!--
+      取某用户最近的生词，按最后标记时间倒序。
+      放进 XML 的原因是需要 LIMIT（构造器只能靠字符串拼接实现，有注入风险）。
+    -->
+    <select id="selectByUser" resultType="UserVocabulary">
+        SELECT *
+          FROM user_vocabulary
+         WHERE user_id = #{userId}
+         ORDER BY last_marked_at DESC
+         LIMIT #{limit}
+    </select>
+
+</mapper>

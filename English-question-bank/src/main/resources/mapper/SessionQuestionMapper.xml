@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+  session_question 表的复杂 SQL。按项目规范（见根目录 AGENTS.md）：
+  批量插入必须写进 XML —— 构造器表达不了，而循环单条插入在题量增长后会变成 N 次往返。
+-->
+<mapper namespace="org.example.englishquestionbank.mapper.SessionQuestionMapper">
+
+    <!--
+      批量插入会话题目快照。
+      用 <foreach> 拼成单条 INSERT ... VALUES (...),(...),(...)，一次往返写完。
+      collection 对应 Mapper 方法上的 @Param("items")。
+    -->
+    <insert id="insertBatch">
+        INSERT INTO session_question
+            (session_id, question_id, sort_order, status, marked_word_count)
+        VALUES
+        <foreach collection="items" item="it" separator=",">
+            (#{it.sessionId}, #{it.questionId}, #{it.sortOrder}, #{it.status}, #{it.markedWordCount})
+        </foreach>
+    </insert>
+
+    <!--
+      更新某道题在本次会话中已标记的词次（冗余统计，结果页用来显示"这题你标了几个词"）。
+      用 SQL 原子自增 +1，而不是在 Java 里「读出来加一再写回」—— 后者并发下会丢更新。
+    -->
+    <update id="incrementMarkedWordCount">
+        UPDATE session_question
+           SET marked_word_count = marked_word_count + 1
+         WHERE session_id = #{sessionId}
+           AND question_id = #{questionId}
+    </update>
+
+</mapper>

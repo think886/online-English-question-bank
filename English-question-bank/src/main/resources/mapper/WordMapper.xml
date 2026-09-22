@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+  word 表的复杂 SQL。按项目规范（见根目录 AGENTS.md）：
+    简单操作 → 构造器（不写在这里）
+    复杂操作 → XML（写在这里）
+
+  三条语句都归入「复杂」，原因：
+    - 前两条需要 LIMIT（构造器只能靠字符串拼接实现）
+    - 后两条含 CONCAT / LIKE 表达式
+
+  namespace 必须是 Mapper 接口的全限定名；语句 id 必须与接口方法名一致。
+  resultType 用实体类短名，依赖 application.yml 里的 type-aliases-package。
+-->
+<mapper namespace="org.example.englishquestionbank.mapper.WordMapper">
+
+    <!--
+      按词频升序取前 N 条。frq 越小越高频；frq IS NULL 表示该词未进当代语料库词频榜。
+      LIMIT 用 #{} 预编译占位符，不是 ${} 字符串拼接 —— 这是防注入的关键。
+    -->
+    <select id="selectTopByFrequency" resultType="Word">
+        SELECT *
+          FROM word
+         WHERE frq IS NOT NULL
+         ORDER BY frq ASC
+         LIMIT #{limit}
+    </select>
+
+    <!--
+      按考试标签统计词条数。
+      tag 列存的是空格分隔的标签串（如 "cet4 cet6 ky"），因此先给两边补空格，
+      再用「空格 + 标签 + 空格」匹配，避免 LIKE '%ky%' 误匹配子串。
+    -->
+    <select id="countByExamTag" resultType="long">
+        SELECT COUNT(*)
+          FROM word
+         WHERE CONCAT(' ', tag, ' ') LIKE CONCAT('% ', #{tag}, ' %')
+    </select>
+
+    <!--
+      反查词形：找出 exchange 里记录了指定形式的原形词条。
+      两处边界保护：
+        - 前缀 '%:'  确保匹配的是「类型:形式」中的「:形式」，而不是词中间的片段
+        - 后缀 '/%'  让 exchange 的最后一段也能被匹配（并避免 :abandon 误命中 :abandoned）
+      性能：全表扫描，已登记为待办 B-01（docs/backlog.md）。
+    -->
+    <select id="selectByExchangeForm" resultType="Word">
+        SELECT *
+          FROM word
+         WHERE exchange IS NOT NULL
+           AND CONCAT(exchange, '/') LIKE CONCAT('%:', #{form}, '/%')
+         LIMIT 1
+    </select>
+
+</mapper>
