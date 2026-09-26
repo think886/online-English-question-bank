@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+  answer_record 表的复杂 SQL。按项目规范（见根目录 AGENTS.md）：
+  upsert 与「取前 N 条」都属于复杂操作，写 XML。
+-->
+<mapper namespace="org.example.englishquestionbank.mapper.AnswerRecordMapper">
+
+    <!--
+      写入或覆盖作答记录。
+
+      唯一键是 (session_id, question_id)：同一题重复提交时<b>覆盖</b>上一次的答案与判分结果，
+      而不是报错或留两行。这是真实需要的行为 —— 用户改答案、或翻译题重新评分都要用到。
+
+      ⚠ 行别名（AS new）写法下，ON DUPLICATE KEY UPDATE 里的列引用必须加限定，
+        否则报 "Column 'x' in field list is ambiguous"。本语句 RHS 全部用 new. 前缀，
+        不引用目标表自身的列，因此不存在歧义（详见 docs/orm-layer.md 4.5）。
+
+      answered_at 用 NOW() 而不是 new.answered_at：以「服务端当前时间」为准，
+      不信任调用方传进来的时间。
+    -->
+    <insert id="upsertAnswer">
+        INSERT INTO answer_record
+            (session_id, user_id, question_id, user_answer, is_correct, score, max_score,
+             grading_status, graded_by, graded_at, duration_ms, answered_at)
+        VALUES
+            (#{r.sessionId}, #{r.userId}, #{r.questionId}, #{r.userAnswer}, #{r.isCorrect},
+             #{r.score}, #{r.maxScore}, #{r.gradingStatus}, #{r.gradedBy}, #{r.gradedAt},
+             #{r.durationMs}, NOW()) AS new
+        ON DUPLICATE KEY UPDATE
+            user_answer    = new.user_answer,
+            is_correct     = new.is_correct,
+            score          = new.score,
+            max_score      = new.max_score,
+            grading_status = new.grading_status,
+            graded_by      = new.graded_by,
+            graded_at      = new.graded_at,
+            duration_ms    = new.duration_ms,
+            answered_at    = NOW()
+    </insert>
+
+    <!--
+      错题本：取某用户答错过的题，按作答时间倒序。
+      这正是 schema 里那句声明的兑现 ——「错题本不需要额外的表，
+      answer_record WHERE is_correct = 0 就是错题本」。
+
+      需要 LIMIT，因此进 XML（构造器只能靠字符串拼接，有注入风险）。
+    -->
+    <select id="selectWrongByUser" resultType="AnswerRecord">
+        SELECT *
+          FROM answer_record
+         WHERE user_id = #{userId}
+           AND is_correct = 0
+         ORDER BY answered_at DESC
+         LIMIT #{limit}
+    </select>
+
+</mapper>

@@ -36,4 +36,20 @@
         ON DUPLICATE KEY UPDATE id = id
     </insert>
 
+    <!--
+      统计某次会话中标记的「去重单词数」。
+
+      用 COUNT(DISTINCT normalized_form) 而不是 COUNT(*)，两者含义不同：
+        COUNT(*)                        = 标记了多少「次」（同一词在不同位置标两次算两次）
+        COUNT(DISTINCT normalized_form) = 标记了多少个「不同的词」
+
+      practice_session.marked_word_count 的语义是后者，因此无法用 +1 增量维护，
+      只在交卷时算一次。
+    -->
+    <select id="countDistinctMarkedWords" resultType="int">
+        SELECT COUNT(DISTINCT normalized_form)
+          FROM user_word_mark
+         WHERE session_id = #{sessionId}
+    </select>
+
 </mapper>

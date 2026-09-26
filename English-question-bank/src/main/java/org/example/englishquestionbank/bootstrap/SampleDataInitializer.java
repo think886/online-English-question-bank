@@ -1,5 +1,6 @@
 package org.example.englishquestionbank.bootstrap;
 
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.example.englishquestionbank.entity.Passage;
@@ -61,6 +62,17 @@ public class SampleDataInitializer implements CommandLineRunner {
             Some local governments now treat community gardens as a normal part of urban
             planning rather than a temporary fashion.""";
 
+    /** 示例翻译题：待翻译的中文原文（汉译英，符合四六级翻译题型）。 */
+    private static final String TRANSLATION_SOURCE = """
+            随着城市的发展，越来越多的人选择骑自行车出行。这不仅有助于减少交通拥堵，\
+            还能改善空气质量，让城市变得更加宜居。""";
+
+    /** 示例翻译题的参考译文。 */
+    private static final String TRANSLATION_REFERENCE =
+            "With the development of cities, more and more people choose to travel by bicycle. "
+                    + "This not only helps reduce traffic congestion, but also improves air quality, "
+                    + "making cities more livable.";
+
     private final SysUserService sysUserService;
     private final PassageMapper passageMapper;
     private final QuestionMapper questionMapper;
@@ -74,6 +86,7 @@ public class SampleDataInitializer implements CommandLineRunner {
                 return;
             }
             ensureSamplePassage();
+            ensureSampleTranslationQuestion();
         } catch (Throwable t) {
             log.error("示例数据初始化失败：{} - {}", t.getClass().getName(), t.getMessage());
         }
@@ -141,6 +154,41 @@ public class SampleDataInitializer implements CommandLineRunner {
                         .eq(Passage::getSource, SAMPLE_SOURCE)
                         .last("LIMIT 1"));
         return found == null ? null : found.getId();
+    }
+
+    /**
+     * 确保存在一道示例翻译题。
+     *
+     * <p><b>幂等判断为什么要独立于文章</b>：翻译题的 {@code passage_id} 为 NULL，
+     * 与示例文章没有关联。如果把它挂在「文章是否已存在」的判断之下，
+     * 那么对于已经建好示例文章的库（比如开发机上已经存在的库），
+     * 这段代码会被整体跳过，翻译题永远补不上。
+     *
+     * <p>这里用「库里是否已存在任意翻译题」作为判断依据 ——
+     * 既幂等，又不会覆盖将来录入的真实翻译题。
+     */
+    private void ensureSampleTranslationQuestion() {
+        long existing = questionMapper.selectCount(
+                Wrappers.<Question>lambdaQuery()
+                        .eq(Question::getQuestionType, "TRANSLATION"));
+        if (existing > 0) {
+            log.info("示例数据：库中已有 {} 道翻译题，跳过示例翻译题初始化", existing);
+            return;
+        }
+
+        Question q = new Question();
+        q.setQuestionType("TRANSLATION");
+        q.setPassageId(null);          // 翻译题不属于任何文章 —— 这正是它需要独立组卷入口的原因
+        q.setStem("请将下面这段中文翻译成英文。");
+        q.setSourceText(TRANSLATION_SOURCE);
+        q.setReferenceAnswer(TRANSLATION_REFERENCE);
+        q.setDifficulty(3);
+        q.setScore(15);                // 四六级翻译占 15%，与阅读题的 1 分区分开
+        q.setSeq(1);
+        q.setStatus(1);
+        questionMapper.insert(q);
+
+        log.info("示例数据：已创建示例翻译题 id={}", q.getId());
     }
 
     private Question insertReadingQuestion(Long passageId, int seq, String stem) {

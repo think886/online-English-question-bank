@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+  practice_session 表的复杂 SQL。按项目规范（见根目录 AGENTS.md）：
+  含算术表达式的更新属于复杂操作，写 XML。
+-->
+<mapper namespace="org.example.englishquestionbank.mapper.PracticeSessionMapper">
+
+    <!--
+      提交答案后调整会话的进度统计。
+
+      <b>三个增量都是「差值」而不是固定的 +1</b>，这是关键：
+        首次作答   → answeredDelta=1
+        重复提交   → answeredDelta=0（不能重复计数）
+        改答案     → correctDelta / scoreDelta 可能为负数
+
+      举例：用户先把某题答对（correct_count +1），之后改成答错，
+      若只做 +1 而不减回去，会话里就会留下一个永远消不掉的对题数。
+      因此调用方需要算出 newValue - oldValue 作为增量。
+
+      用 SQL 侧的自增/自减而不是「读出来改再写回」：后者在并发下会丢更新。
+
+      注：本语句没有行别名，裸列名不存在歧义（对比 AnswerRecordMapper.xml 的 upsert）。
+    -->
+    <update id="incrementProgress">
+        UPDATE practice_session
+           SET answered_count = answered_count + #{answeredDelta},
+               correct_count  = correct_count + #{correctDelta},
+               score          = score + #{scoreDelta}
+         WHERE id = #{sessionId}
+    </update>
+
+    <!--
+      聚合重算某次会话的作答汇总。
+
+      <b>为什么交卷时要重算，而不是沿用中途累加的增量</b>：
+      中途的 incrementProgress 是「性能优化」——让前端能实时显示进度；
+      而这里的一次聚合是「正确性保证」。只靠增量，一旦任何一次漏算或重复累加，
+      最终成绩就永久错了；交卷时用事实数据重算一遍，结果一定与 answer_record 一致。
+
+      两个细节：
+        SUM(is_correct = 1) —— 翻译题的 is_correct 为 NULL，NULL = 1 得 NULL，
+                               会被 SUM 忽略，因此翻译题不会污染对题数
+        COALESCE(..., 0)    —— 一题未答时 SUM 返回 NULL，统一折算成 0
+    -->
+    <select id="selectAnswerSummary"
+            resultType="org.example.englishquestionbank.dto.SessionSummary">
+        SELECT COUNT(*)                         AS answered,
+               COALESCE(SUM(is_correct = 1), 0) AS correct,
+               COALESCE(SUM(score), 0)          AS score
+          FROM answer_record
+         WHERE session_id = #{sessionId}
+    </select>
+
+</mapper>

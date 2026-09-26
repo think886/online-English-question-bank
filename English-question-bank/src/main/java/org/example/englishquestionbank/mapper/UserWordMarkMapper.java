@@ -31,4 +31,17 @@ public interface UserWordMarkMapper extends BaseMapper<UserWordMark> {
      * @return 受影响行数（<b>不可靠</b>，仅用于日志）
      */
     int insertIgnoreDuplicate(@Param("m") UserWordMark mark);
+
+    /**
+     * 统计某次会话中标记的「去重单词数」。
+     *
+     * <p>{@code COUNT(DISTINCT normalized_form)} 与 {@code COUNT(*)} 含义不同：
+     * 前者是「多少个不同的词」，后者是「标记了多少次」。
+     * {@code practice_session.marked_word_count} 的语义是前者，
+     * 因此无法用 {@code +1} 增量维护，只在交卷时算一次。
+     *
+     * @param sessionId 会话 id
+     * @return 去重后的单词数
+     */
+    int countDistinctMarkedWords(@Param("sessionId") Long sessionId);
 }

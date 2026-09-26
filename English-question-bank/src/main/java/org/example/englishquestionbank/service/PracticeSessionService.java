@@ -7,11 +7,7 @@ import org.example.englishquestionbank.entity.PracticeSession;
  *
  * <p><b>当前范围</b>：只支持「按文章开始一次练习」，即一次会话 = 一篇文章及其下 N 道选择题。
  * <b>不含组卷算法</b>（随机抽题、按难度选题等），也不含翻译题会话
- * （翻译题的 {@code passage_id} 为空，如何组卷尚未讨论）。
- *
- * <p><b>{@code finishSession} 尚未实现</b>：交卷需要用作答记录做一次聚合重算，
- * 依赖 {@code AnswerService} 先落地。计划在实现作答链路之后补上，
- * 详见 {@code docs/service-layer.md} 第四节的步骤 7。
+ * （翻译题的 {@code passage_id} 为空，如何组卷尚未设计，见 {@code docs/backlog.md} B-11）。
  */
 public interface PracticeSessionService {
 
@@ -42,10 +38,64 @@ public interface PracticeSessionService {
     PracticeSession startSession(Long userId, Long passageId);
 
     /**
+     * 开始一次<b>翻译题</b>练习。
+     *
+     * <p><b>为什么需要独立入口</b>：翻译题的 {@code passage_id} 为 NULL
+     * （它不属于任何文章），因此无法用 {@link #startSession} 那种「按文章取题」的方式组卷。
+     * 这里改为按 {@code question_type = 'TRANSLATION'} 直接取题。
+     *
+     * <p>与阅读题会话的区别：
+     * <table border="1">
+     *   <caption>两类会话的对比</caption>
+     *   <tr><th></th><th>{@link #startSession}</th><th>{@link #startTranslationSession}</th></tr>
+     *   <tr><td>{@code mode}</td><td>{@code READING}</td><td>{@code TRANSLATION}</td></tr>
+     *   <tr><td>{@code passage_id}</td><td>文章 id</td><td><b>NULL</b></td></tr>
+     *   <tr><td>选题依据</td><td>{@code passage_id = ?}</td><td>{@code question_type = ?}</td></tr>
+     * </table>
+     *
+     * <p><b>不含随机抽题</b>：按 {@code id} 升序取前 N 道，结果确定、可复现。
+     * 随机选题属于「组卷算法」，不在当前范围内。
+     *
+     * @param userId 用户 id
+     * @param count  本次练习多少道翻译题，取值范围 1~50
+     * @return 新建的会话实体，{@code id} 已回填
+     * @throws IllegalArgumentException 用户不存在，或 {@code count} 超出范围
+     * @throws IllegalStateException    题库中没有可用的翻译题
+     */
+    PracticeSession startTranslationSession(Long userId, int count);
+
+    /**
      * 按主键查询会话。
      *
      * @param sessionId 会话 id
      * @return 会话实体；不存在时返回 {@code null}
      */
     PracticeSession findById(Long sessionId);
+
+    /**
+     * 交卷，结束一次练习。
+     *
+     * <p>执行步骤（在一个事务内）：
+     * <ol>
+     *   <li>校验会话存在且状态为 {@code IN_PROGRESS} —— 防止重复交卷</li>
+     *   <li><b>聚合重算</b>作答汇总（已答题量 / 答对题量 / 得分），以 {@code answer_record} 为准</li>
+     *   <li>统计本次会话标记的<b>去重单词数</b>（{@code COUNT(DISTINCT normalized_form)}）</li>
+     *   <li>更新会话：状态置 {@code FINISHED}、填充 {@code finished_at} 与 {@code duration_ms}，
+     *       并用第 2、3 步的结果<b>覆盖</b>中途累加的统计值</li>
+     * </ol>
+     *
+     * <p><b>为什么要重算而不是沿用增量</b>：中途每次提交答案都会增量更新统计
+     * （为了让前端实时显示进度），那是「性能优化」；交卷时的聚合是「正确性保证」。
+     * 只要任何一次增量漏算或重复累加，最终成绩就永久错了；
+     * 用事实数据重算一遍，结果一定与作答记录一致。
+     *
+     * <p>{@code max_score}（本次总分值）<b>不参与重算</b> —— 它在 {@link #startSession}
+     * 时按会话内全部题目的分值之和确定，是个固定值；
+     * 若改成按已作答题目求和，语义就变成了另一个东西。
+     *
+     * @param sessionId 会话 id
+     * @throws IllegalArgumentException 会话不存在
+     * @throws IllegalStateException    会话状态不是 {@code IN_PROGRESS}（已交卷或已放弃）
+     */
+    void finishSession(Long sessionId);
 }

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<!--
+  question 表的复杂 SQL。按项目规范（见根目录 AGENTS.md）：
+  「取前 N 条」属于复杂操作，写 XML。
+-->
+<mapper namespace="org.example.englishquestionbank.mapper.QuestionMapper">
+
+    <!--
+      按题型取前 N 道启用题目。
+
+      用途：翻译题的组卷。翻译题的 passage_id 为 NULL（不属于任何文章），
+      无法用「按文章取题」的方式组卷，因此需要按 question_type 直接取。
+
+      按 id 升序是刻意的 —— 保证结果确定、可复现。
+      随机抽题属于「组卷算法」，不在当前范围内；将来要做的话应新增查询，
+      而不是改动这条（它还被其它确定性场景使用）。
+    -->
+    <select id="selectByTypeWithLimit" resultType="Question">
+        SELECT *
+          FROM question
+         WHERE question_type = #{questionType}
+           AND status = 1
+         ORDER BY id ASC
+         LIMIT #{limit}
+    </select>
+
+</mapper>
