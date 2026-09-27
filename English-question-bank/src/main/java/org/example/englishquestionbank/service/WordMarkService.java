@@ -2,6 +2,7 @@ package org.example.englishquestionbank.service;
 
 import org.example.englishquestionbank.dto.MarkCommand;
 import org.example.englishquestionbank.dto.MarkResult;
+import org.example.englishquestionbank.dto.MarkedWordSummary;
 import org.example.englishquestionbank.entity.UserVocabulary;
 import org.example.englishquestionbank.entity.UserWordMark;
 
@@ -74,4 +75,25 @@ public interface WordMarkService {
      * @return 生词列表
      */
     List<UserVocabulary> listVocabulary(Long userId, int limit);
+
+    /**
+     * 汇总本次会话标记过的词 —— <b>按原形去重，并补上中文释义</b>。
+     *
+     * <p>与 {@link #listMarksBySession} 的区别：
+     * 后者返回的是**每一次划词事件**（同一个词在不同位置标两次就是两行），
+     * 前者返回的是「本次练习中我标记了哪些**不同的词**、分别是什么意思」。
+     *
+     * <p>结果页需要的是后者 —— 这是项目最初的核心需求之一。
+     *
+     * <p><b>返回顺序</b>：按各词在文本中<b>首次出现的位置</b>（即 {@code char_start} 升序）
+     * 排列，也就是阅读顺序。
+     * 【纠正】此处曾写作「保持首次标记的顺序」—— 与实现不符：
+     * 底层 {@link #listMarksBySession} 是按 {@code char_start} 排序的，
+     * 与用户点击的先后无关。现予更正。
+     *
+     * @param userId    用户 id
+     * @param sessionId 会话 id
+     * @return 去重后的标记词摘要，按文本位置排序；没有任何标记时返回空列表
+     */
+    List<MarkedWordSummary> summarizeSessionMarks(Long userId, Long sessionId);
 }

@@ -145,7 +145,7 @@ public class TranslationVerifier implements CommandLineRunner {
                             : "译文长度 " + record.getUserAnswer().length() + " 字符，与提交内容一致");
 
             // ---------- [7] 交卷后的聚合重算同样不受 NULL 影响 ----------
-            practiceSessionService.finishSession(sessionId);
+            practiceSessionService.finishSession(userId, sessionId);
             PracticeSession finished = practiceSessionMapper.selectById(sessionId);
             check("交卷聚合重算后统计仍然正确",
                     "FINISHED".equals(finished.getStatus())

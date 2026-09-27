@@ -168,10 +168,24 @@ public class AnswerVerifier implements CommandLineRunner {
                     answered == 2, "已作答快照 " + answered + " / " + snapshots.size());
 
             // ---------- [7] 错题本 ----------
-            List<AnswerRecord> wrong = answerService.listWrongByUser(userId, 10);
-            check("错题本可查到本次的两道错题",
-                    wrong.size() == 2,
-                    "查到 " + wrong.size() + " 条（两题在改答案后均为错）");
+            //
+            // 【第 2 次修订】原来断言 wrong.size() == 2，隐含假设「该用户没有别的错题」。
+            // 只要用同一个用户手工测过一次作答（例如 tools/api-smoke.ps1），
+            // 错题本里就会多出别人的记录，自检误报失败。
+            // 改为【只看本次会话产生的记录】，同时仍然验证「错题本 = is_correct=0」这条语义。
+            List<AnswerRecord> wrong = answerService.listWrongByUser(userId, 50);
+            // sessionId 是「先赋 null 再赋值」，不是 effectively final，lambda 里用不了，
+            // 因此先拷一份只赋一次值的局部变量
+            Long sid = sessionId;
+            List<AnswerRecord> wrongOfThisSession = wrong.stream()
+                    .filter(r -> sid.equals(r.getSessionId()))
+                    .toList();
+            check("错题本可查到本次的两道错题，且不含答对的题",
+                    wrongOfThisSession.size() == 2
+                            && wrongOfThisSession.stream()
+                                    .allMatch(r -> Integer.valueOf(0).equals(r.getIsCorrect())),
+                    String.format("本次会话错题 %d 条（期望 2）；查询共返回 %d 条",
+                            wrongOfThisSession.size(), wrong.size()));
 
             // ---------- [8] 不在会话中的题不能作答 ----------
             boolean rejectedNotInSession = false;

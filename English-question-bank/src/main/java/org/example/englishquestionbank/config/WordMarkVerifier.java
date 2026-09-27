@@ -105,6 +105,14 @@ public class WordMarkVerifier implements CommandLineRunner {
 
             long marksBefore = countMarks(userId, sessionId);
 
+            // 【第 2 次修订】run 这个词在生词本里的基线计数。
+            //
+            // 原来这里直接断言 mark_count == 1 / == 2，隐含假设「该用户的生词本里没有 run」。
+            // 这个假设只在数据库纯净时成立 —— 手工 curl 测过一次划词、或跑了一次
+            // tools/api-smoke.ps1，计数就变成了 3 / 4，自检会误报失败。
+            // 自检应当断言【自己造成的增量】，而不是全局绝对值。
+            int runBase = vocabMarkCount(userId, "run") == null ? 0 : vocabMarkCount(userId, "run");
+
             // ---------- [1] 首次标记 + 词形归一化 ----------
             // 故意把标点一起送来（"running,"），验证服务会清洗
             MarkResult first = wordMarkService.markWord(new MarkCommand(
@@ -131,8 +139,9 @@ public class WordMarkVerifier implements CommandLineRunner {
 
             // ---------- [3] 生词本首次写入 ----------
             Integer count1 = vocabMarkCount(userId, "run");
-            check("生词本首次写入 mark_count=1", Integer.valueOf(1).equals(count1),
-                    "mark_count=" + count1);
+            check("生词本首次写入：mark_count 相对基线 +1",
+                    count1 != null && count1 == runBase + 1,
+                    String.format("mark_count=%s（期望 %d，基线 %d）", count1, runBase + 1, runBase));
 
             // ---------- [4] 重复标记同一位置：幂等空操作 ----------
             MarkResult again = wordMarkService.markWord(new MarkCommand(
@@ -143,9 +152,10 @@ public class WordMarkVerifier implements CommandLineRunner {
             check("同位置重复标记是幂等空操作",
                     again.alreadyMarked()
                             && marksAfterDup == marksBefore + 1
-                            && Integer.valueOf(1).equals(count2),
-                    String.format("alreadyMarked=%s 标记行数=%d（期望 %d）mark_count=%s（期望 1）",
-                            again.alreadyMarked(), marksAfterDup, marksBefore + 1, count2));
+                            && count2 != null && count2 == runBase + 1,
+                    String.format("alreadyMarked=%s 标记行数=%d（期望 %d）mark_count=%s（期望 %d）",
+                            again.alreadyMarked(), marksAfterDup, marksBefore + 1,
+                            count2, runBase + 1));
 
             // ---------- [5] 不同位置标记同一个词：新增行但生词本仍累加 ----------
             MarkResult other = wordMarkService.markWord(new MarkCommand(
@@ -156,9 +166,9 @@ public class WordMarkVerifier implements CommandLineRunner {
             check("不同位置标记同词：新增行 + 生词本累加",
                     !other.alreadyMarked()
                             && marksAfterSecond == marksBefore + 2
-                            && Integer.valueOf(2).equals(count3),
-                    String.format("标记行数=%d（期望 %d）mark_count=%s（期望 2）",
-                            marksAfterSecond, marksBefore + 2, count3));
+                            && count3 != null && count3 == runBase + 2,
+                    String.format("标记行数=%d（期望 %d）mark_count=%s（期望 %d）",
+                            marksAfterSecond, marksBefore + 2, count3, runBase + 2));
 
             // ---------- [6] question_id 为 NULL 时生成列归零 ----------
             MarkResult noQuestion = wordMarkService.markWord(new MarkCommand(

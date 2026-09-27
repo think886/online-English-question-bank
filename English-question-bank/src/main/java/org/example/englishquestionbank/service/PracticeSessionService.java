@@ -1,13 +1,19 @@
 package org.example.englishquestionbank.service;
 
+import org.example.englishquestionbank.dto.PracticeContent;
+import org.example.englishquestionbank.dto.PracticeResult;
 import org.example.englishquestionbank.entity.PracticeSession;
 
 /**
  * 练习会话服务 —— 管理一次练习的「开始 → 作答中 → 交卷」生命周期。
  *
- * <p><b>当前范围</b>：只支持「按文章开始一次练习」，即一次会话 = 一篇文章及其下 N 道选择题。
- * <b>不含组卷算法</b>（随机抽题、按难度选题等），也不含翻译题会话
- * （翻译题的 {@code passage_id} 为空，如何组卷尚未设计，见 {@code docs/backlog.md} B-11）。
+ * <p><b>当前范围</b>：支持两类会话 ——
+ * <ul>
+ *   <li><b>阅读题</b>：{@link #startSession}，一次会话 = 一篇文章及其下 N 道选择题</li>
+ *   <li><b>翻译题</b>：{@link #startTranslationSession}，按题型取题
+ *       （翻译题的 {@code passage_id} 为 NULL，无法按文章组卷）</li>
+ * </ul>
+ * <b>不含组卷算法</b>（随机抽题、按难度选题等）。
  */
 public interface PracticeSessionService {
 
@@ -77,7 +83,8 @@ public interface PracticeSessionService {
      *
      * <p>执行步骤（在一个事务内）：
      * <ol>
-     *   <li>校验会话存在且状态为 {@code IN_PROGRESS} —— 防止重复交卷</li>
+     *   <li>校验会话存在、<b>属于该用户</b>、且状态为 {@code IN_PROGRESS} ——
+     *       防止重复交卷，也防止交别人的卷</li>
      *   <li><b>聚合重算</b>作答汇总（已答题量 / 答对题量 / 得分），以 {@code answer_record} 为准</li>
      *   <li>统计本次会话标记的<b>去重单词数</b>（{@code COUNT(DISTINCT normalized_form)}）</li>
      *   <li>更新会话：状态置 {@code FINISHED}、填充 {@code finished_at} 与 {@code duration_ms}，
@@ -93,9 +100,47 @@ public interface PracticeSessionService {
      * 时按会话内全部题目的分值之和确定，是个固定值；
      * 若改成按已作答题目求和，语义就变成了另一个东西。
      *
+     * @param userId    用户 id —— 用于<b>归属校验</b>，防止交别人的卷
      * @param sessionId 会话 id
      * @throws IllegalArgumentException 会话不存在
-     * @throws IllegalStateException    会话状态不是 {@code IN_PROGRESS}（已交卷或已放弃）
+     * @throws IllegalStateException    会话不属于该用户，或状态不是 {@code IN_PROGRESS}
+     *                                  （已交卷或已放弃）
      */
-    void finishSession(Long sessionId);
+    void finishSession(Long userId, Long sessionId);
+
+    /**
+     * 读取一次练习的完整内容（会话 + 文章 + 题目 + 选项）。
+     *
+     * <p><b>题目按会话快照的顺序返回，而不是按文章当前的题目顺序</b> ——
+     * 这正是 {@code session_question} 表存在的意义：文章事后被编辑也不会打乱历史会话。
+     *
+     * <p>这个方法同时服务「开始练习」与「结果页」两个场景。
+     *
+     * @param sessionId 会话 id
+     * @return 练习内容；翻译题会话的 {@code passage} 为 {@code null}
+     * @throws IllegalArgumentException 会话不存在
+     */
+    PracticeContent loadContent(Long sessionId);
+
+    /**
+     * 读取一次练习的<b>结果页数据</b> —— 文章、题目、作答记录、标记词。
+     *
+     * <p><b>与 {@link #loadContent} 的区别</b>：这个方法会带出<b>正确答案与解析</b>
+     * （在响应层通过 {@code AnswerDetailResponse} 暴露），
+     * 因此有两条硬性约束：
+     * <ol>
+     *   <li>会话必须属于 {@code userId} —— 别人的卷不给看</li>
+     *   <li>会话状态必须是 {@code FINISHED} —— <b>没交卷就不给看答案</b>，
+     *       否则「结果页」就成了作弊入口</li>
+     * </ol>
+     * 这两条是安全边界，所以放在服务层而不是 Controller ——
+     * Controller 只是「取身份、调服务、转 DTO」，不该承载访问规则。
+     *
+     * @param userId    用户 id
+     * @param sessionId 会话 id
+     * @return 结果页数据
+     * @throws IllegalArgumentException 会话不存在
+     * @throws IllegalStateException    会话不属于该用户，或尚未交卷
+     */
+    PracticeResult loadResult(Long userId, Long sessionId);
 }

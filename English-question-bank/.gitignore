@@ -42,3 +42,9 @@ tools/*.zip
 
 # 保留测试用小样本
 !tools/_testdata/*.csv
+
+### 运行 / 构建产物 ###
+# 手工验证接口时用 `*> app.log` / `*> build.log` 重定向出来的日志，属临时产物
+*.log
+__pycache__/
+*.pyc

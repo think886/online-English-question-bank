@@ -3,23 +3,36 @@ package org.example.englishquestionbank.service.impl;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.example.englishquestionbank.dto.PracticeContent;
+import org.example.englishquestionbank.dto.PracticeResult;
 import org.example.englishquestionbank.dto.SessionSummary;
+import org.example.englishquestionbank.entity.AnswerRecord;
+import org.example.englishquestionbank.entity.Passage;
 import org.example.englishquestionbank.entity.PracticeSession;
 import org.example.englishquestionbank.entity.Question;
+import org.example.englishquestionbank.entity.QuestionOption;
 import org.example.englishquestionbank.entity.SessionQuestion;
+import org.example.englishquestionbank.entity.UserWordMark;
+import org.example.englishquestionbank.mapper.PassageMapper;
 import org.example.englishquestionbank.mapper.PracticeSessionMapper;
 import org.example.englishquestionbank.mapper.QuestionMapper;
+import org.example.englishquestionbank.mapper.QuestionOptionMapper;
 import org.example.englishquestionbank.mapper.SessionQuestionMapper;
 import org.example.englishquestionbank.mapper.SysUserMapper;
 import org.example.englishquestionbank.mapper.UserWordMarkMapper;
+import org.example.englishquestionbank.service.AnswerService;
 import org.example.englishquestionbank.service.PracticeSessionService;
+import org.example.englishquestionbank.service.WordMarkService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 
 /**
  * {@link PracticeSessionService} 的实现。
@@ -42,9 +55,24 @@ public class PracticeSessionServiceImpl implements PracticeSessionService {
 
     private final SysUserMapper sysUserMapper;
     private final QuestionMapper questionMapper;
+    private final QuestionOptionMapper questionOptionMapper;
+    private final PassageMapper passageMapper;
     private final PracticeSessionMapper practiceSessionMapper;
     private final SessionQuestionMapper sessionQuestionMapper;
     private final UserWordMarkMapper userWordMarkMapper;
+
+    /**
+     * 结果页要组装作答记录与标记词，这里注入两个同级服务。
+     *
+     * <p><b>为什么不直接注入 Mapper</b>：{@code answer_record} 的读取规则
+     * （比如将来过滤掉「已作废」的记录）属于 {@code AnswerService} 的职责，
+     * 在这里再写一遍 SELECT 就会出现第二套规则。
+     *
+     * <p><b>依赖方向是单向的</b>：本类 → AnswerService / WordMarkService，
+     * 而这两个服务只依赖 Mapper，不反向依赖本类，因此不会形成循环依赖。
+     */
+    private final AnswerService answerService;
+    private final WordMarkService wordMarkService;
 
     /**
      * {@inheritDoc}
@@ -163,12 +191,15 @@ public class PracticeSessionServiceImpl implements PracticeSessionService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public void finishSession(Long sessionId) {
+    public void finishSession(Long userId, Long sessionId) {
         // ---- 1. 校验状态，防止重复交卷 ----
         PracticeSession session = practiceSessionMapper.selectById(sessionId);
         if (session == null) {
             throw new IllegalArgumentException("会话不存在: sessionId=" + sessionId);
         }
+        // 归属校验：不做的话，任何人猜到 sessionId 就能把别人的卷交掉 ——
+        // 那会写坏对方的 finished_at / duration_ms / 统计值，且不可撤销。
+        requireOwnership(session, userId);
         if (!"IN_PROGRESS".equals(session.getStatus())) {
             throw new IllegalStateException("会话状态不是 IN_PROGRESS，不能重复交卷: status="
                     + session.getStatus());
@@ -202,5 +233,105 @@ public class PracticeSessionServiceImpl implements PracticeSessionService {
         log.debug("交卷完成 sessionId={} 已答={} 答对={} 得分={} 标记词数={} 耗时={}ms",
                 sessionId, summary.getAnswered(), summary.getCorrect(),
                 summary.getScore(), markedWords, durationMs);
+    }
+
+    @Override
+    public PracticeContent loadContent(Long sessionId) {
+        PracticeSession session = practiceSessionMapper.selectById(sessionId);
+        if (session == null) {
+            throw new IllegalArgumentException("会话不存在: sessionId=" + sessionId);
+        }
+
+        // 翻译题会话的 passage_id 为 NULL
+        Passage passage = session.getPassageId() == null
+                ? null
+                : passageMapper.selectById(session.getPassageId());
+
+        // 关键：按【会话快照】取题，而不是按文章的当前题目列表。
+        // 文章事后被增删题、调整题号，都不会影响这次历史会话 —— 这正是 session_question 的意义。
+        List<SessionQuestion> snapshots = sessionQuestionMapper.selectList(
+                Wrappers.<SessionQuestion>lambdaQuery()
+                        .eq(SessionQuestion::getSessionId, sessionId)
+                        .orderByAsc(SessionQuestion::getSortOrder));
+        if (snapshots.isEmpty()) {
+            return new PracticeContent(session, passage, List.of(), Map.of());
+        }
+
+        List<Long> questionIds = snapshots.stream()
+                .map(SessionQuestion::getQuestionId)
+                .toList();
+
+        // 单表条件查询 → 构造器（项目规范）
+        Map<Long, Question> questionById = new LinkedHashMap<>();
+        for (Question q : questionMapper.selectList(
+                Wrappers.<Question>lambdaQuery().in(Question::getId, questionIds))) {
+            questionById.put(q.getId(), q);
+        }
+        // 按快照顺序重排 —— 数据库的 IN 查询不保证返回顺序，直接用会让题号乱掉
+        List<Question> ordered = questionIds.stream()
+                .map(questionById::get)
+                .filter(Objects::nonNull)
+                .toList();
+
+        // 选项按题分组，组内已按 seq 升序
+        Map<Long, List<QuestionOption>> optionsByQuestion = new LinkedHashMap<>();
+        for (QuestionOption option : questionOptionMapper.selectList(
+                Wrappers.<QuestionOption>lambdaQuery()
+                        .in(QuestionOption::getQuestionId, questionIds)
+                        .orderByAsc(QuestionOption::getSeq))) {
+            optionsByQuestion.computeIfAbsent(option.getQuestionId(), k -> new ArrayList<>())
+                    .add(option);
+        }
+
+        return new PracticeContent(session, passage, ordered, optionsByQuestion);
+    }
+
+    @Override
+    public PracticeResult loadResult(Long userId, Long sessionId) {
+        // ⚠ 这里是【自调用】。loadContent 上没有 @Transactional，因此不走代理也没关系；
+        //   若哪天给 loadContent 加上事务注解，必须改成注入自身代理或拆分到另一个 Bean，
+        //   否则事务会静默失效（本项目已踩过这个坑，见 AGENTS.md「事务自调用」）。
+        PracticeContent content = loadContent(sessionId);
+        PracticeSession session = content.session();
+
+        // ---- 安全边界 1：只能看自己的卷 ----
+        requireOwnership(session, userId);
+
+        // ---- 安全边界 2：没交卷不给答案 ----
+        // 结果页会带出 correctAnswer / referenceAnswer / analysis，
+        // 若允许练习中访问，用户交卷前一查就能拿到全部答案。
+        if (!"FINISHED".equals(session.getStatus())) {
+            throw new IllegalStateException("会话尚未交卷，不能查看结果: sessionId=" + sessionId
+                    + " status=" + session.getStatus());
+        }
+
+        // ---- 作答记录按题索引 ----
+        // 用 put 而不是 merge：唯一键 session_id + question_id 保证一题至多一条记录
+        Map<Long, AnswerRecord> answerByQuestion = new LinkedHashMap<>();
+        for (AnswerRecord record : answerService.listBySession(sessionId)) {
+            answerByQuestion.put(record.getQuestionId(), record);
+        }
+
+        // ---- 标记词按题分组 ----
+        // questionId 为 null 的是「在文章正文上划的词」，归不到任何一题，这里略过；
+        // 它们不会丢 —— 下面的 markedWords 是全量去重汇总。
+        Map<Long, List<UserWordMark>> marksByQuestion = new LinkedHashMap<>();
+        for (UserWordMark mark : wordMarkService.listMarksBySession(userId, sessionId)) {
+            if (mark.getQuestionId() != null) {
+                marksByQuestion.computeIfAbsent(mark.getQuestionId(), k -> new ArrayList<>())
+                        .add(mark);
+            }
+        }
+
+        return new PracticeResult(content, answerByQuestion, marksByQuestion,
+                wordMarkService.summarizeSessionMarks(userId, sessionId));
+    }
+
+    /** 会话必须属于该用户；否则抛 {@link IllegalStateException}（映射为 HTTP 403 更贴切，见 backlog B-12）。 */
+    private void requireOwnership(PracticeSession session, Long userId) {
+        if (!Objects.equals(userId, session.getUserId())) {
+            throw new IllegalStateException("会话不属于该用户: sessionId=" + session.getId()
+                    + " sessionUserId=" + session.getUserId() + " userId=" + userId);
+        }
     }
 }

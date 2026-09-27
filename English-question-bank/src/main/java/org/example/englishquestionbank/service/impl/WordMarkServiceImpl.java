@@ -5,19 +5,27 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.example.englishquestionbank.dto.MarkCommand;
 import org.example.englishquestionbank.dto.MarkResult;
+import org.example.englishquestionbank.dto.MarkedWordSummary;
 import org.example.englishquestionbank.entity.PracticeSession;
 import org.example.englishquestionbank.entity.UserVocabulary;
 import org.example.englishquestionbank.entity.UserWordMark;
+import org.example.englishquestionbank.entity.Word;
 import org.example.englishquestionbank.mapper.PracticeSessionMapper;
 import org.example.englishquestionbank.mapper.SessionQuestionMapper;
 import org.example.englishquestionbank.mapper.UserVocabularyMapper;
 import org.example.englishquestionbank.mapper.UserWordMarkMapper;
+import org.example.englishquestionbank.mapper.WordMapper;
 import org.example.englishquestionbank.support.WordFormNormalizer;
 import org.example.englishquestionbank.service.WordMarkService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -44,12 +52,14 @@ public class WordMarkServiceImpl implements WordMarkService {
     private final UserVocabularyMapper userVocabularyMapper;
     private final SessionQuestionMapper sessionQuestionMapper;
     private final PracticeSessionMapper practiceSessionMapper;
+    private final WordMapper wordMapper;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public MarkResult markWord(MarkCommand cmd) {
         // ---- 1. 校验入参 ----
         validate(cmd);
+        Long passageId = resolvePassageId(cmd);
 
         // ---- 2. 清洗 + 3. 归一化 ----
         String cleaned = WordFormNormalizer.clean(cmd.surfaceForm());
@@ -75,7 +85,7 @@ public class WordMarkServiceImpl implements WordMarkService {
         mark.setUserId(cmd.userId());
         mark.setSessionId(cmd.sessionId());
         mark.setQuestionId(cmd.questionId());
-        mark.setPassageId(cmd.passageId());
+        mark.setPassageId(passageId);
         mark.setSourceField(cmd.sourceField());
         mark.setWordId(normalized.wordId());
         mark.setSurfaceForm(cmd.surfaceForm());
@@ -146,17 +156,32 @@ public class WordMarkServiceImpl implements WordMarkService {
             throw new IllegalArgumentException(String.format(
                     "偏移量非法: charStart=%s charEnd=%s", cmd.charStart(), cmd.charEnd()));
         }
-        // 会话若提供，必须真实存在且属于该用户 —— 防止跨用户写数据
-        if (cmd.sessionId() != null) {
-            PracticeSession session = practiceSessionMapper.selectById(cmd.sessionId());
-            if (session == null) {
-                throw new IllegalStateException("会话不存在: sessionId=" + cmd.sessionId());
-            }
-            if (!cmd.userId().equals(session.getUserId())) {
-                throw new IllegalStateException("会话不属于该用户: sessionId=" + cmd.sessionId()
-                        + " sessionUserId=" + session.getUserId() + " userId=" + cmd.userId());
-            }
+        // 会话的校验挪到 resolvePassageId()，那里顺便把 passageId 定下来
+    }
+
+    /**
+     * 校验会话存在性 / 归属，并返回该标记应当写入的 {@code passageId}。
+     *
+     * <p><b>为什么不直接用 {@code cmd.passageId()}：</b>划词最主流的场景是在**文章正文**上划，
+     * 此时前端只知道「我正在做这么一份练习」，并不知道文章在库里的主键。
+     * 让前端传 passageId 等于把内部 id 暴露给客户端，而且一旦传错就会写脏数据 ——
+     * 文章本来就在会话上，直接以会话为准即可，前端传什么都不影响。
+     *
+     * <p>无会话时（自由阅读划词）才回退到入参里的 passageId，允许为 null。
+     */
+    private Long resolvePassageId(MarkCommand cmd) {
+        if (cmd.sessionId() == null) {
+            return cmd.passageId();
         }
+        PracticeSession session = practiceSessionMapper.selectById(cmd.sessionId());
+        if (session == null) {
+            throw new IllegalStateException("会话不存在: sessionId=" + cmd.sessionId());
+        }
+        if (!cmd.userId().equals(session.getUserId())) {
+            throw new IllegalStateException("会话不属于该用户: sessionId=" + cmd.sessionId()
+                    + " sessionUserId=" + session.getUserId() + " userId=" + cmd.userId());
+        }
+        return session.getPassageId();
     }
 
     /**
@@ -188,5 +213,57 @@ public class WordMarkServiceImpl implements WordMarkService {
             return null;
         }
         return text.length() <= maxLength ? text : text.substring(0, maxLength);
+    }
+
+    @Override
+    public List<MarkedWordSummary> summarizeSessionMarks(Long userId, Long sessionId) {
+        List<UserWordMark> marks = listMarksBySession(userId, sessionId);
+        if (marks.isEmpty()) {
+            return List.of();
+        }
+
+        // 按原形聚合，用 LinkedHashMap 保持 listMarksBySession 给出的顺序
+        //
+        // 【纠正】这里原本写的是「保持首次标记的顺序」—— 错的。
+        // listMarksBySession 的 SQL 是 ORDER BY char_start ASC，
+        // 所以分组顺序其实是「该词在文本中首次出现的位置」顺序（阅读顺序），
+        // 与用户实际点击的先后无关。行为本身没问题（按阅读顺序展示更自然），
+        // 但注释把机制说错了，现予更正。
+        Map<String, List<UserWordMark>> byForm = new LinkedHashMap<>();
+        for (UserWordMark mark : marks) {
+            byForm.computeIfAbsent(mark.getNormalizedForm(), k -> new ArrayList<>()).add(mark);
+        }
+
+        // 批量取释义：一次 IN 查询，而不是每个词查一次
+        List<Long> wordIds = marks.stream()
+                .map(UserWordMark::getWordId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        Map<Long, Word> wordById = new HashMap<>();
+        if (!wordIds.isEmpty()) {
+            for (Word word : wordMapper.selectList(
+                    Wrappers.<Word>lambdaQuery().in(Word::getId, wordIds))) {
+                wordById.put(word.getId(), word);
+            }
+        }
+
+        List<MarkedWordSummary> summaries = new ArrayList<>(byForm.size());
+        for (Map.Entry<String, List<UserWordMark>> entry : byForm.entrySet()) {
+            List<UserWordMark> group = entry.getValue();
+            UserWordMark first = group.get(0);
+            Word word = first.getWordId() == null ? null : wordById.get(first.getWordId());
+            summaries.add(new MarkedWordSummary(
+                    entry.getKey(),
+                    word != null && word.getDisplayForm() != null
+                            ? word.getDisplayForm() : first.getSurfaceForm(),
+                    // 词典未收录时为 null —— 前端可据此提示「暂未收录释义」
+                    word == null ? null : word.getTranslation(),
+                    first.getWordId(),
+                    group.size(),
+                    group.stream().map(UserWordMark::getSentence)
+                            .filter(Objects::nonNull).findFirst().orElse(null)));
+        }
+        return summaries;
     }
 }
