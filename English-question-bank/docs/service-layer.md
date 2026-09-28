@@ -16,6 +16,7 @@
 | 第 7 次 | 2026-09-26 | `PracticeSessionService.finishSession` 实现完成；新增 4.5 节记录阶段 5 端到端实测（9/9），**用「篡改统计后交卷」验证了聚合重算确实纠偏** |
 | 第 8 次 | 2026-09-26 | **解决待办 B-11**：新增 `startTranslationSession` 独立组卷入口，翻译题第一次可用；新增 4.6 节记录阶段 6 实测（8/8），含「NULL 的 `is_correct` 不污染统计」 |
 | 第 9 次 | 2026-09-27 | API 层收尾所需的两个新增/变更：**`finishSession` 签名加 `userId`**（原先猜到 sessionId 就能交别人的卷）、新增 `loadResult(userId, sessionId)`（含归属与「未交卷不给答案」两条访问边界）；新增 `summarizeSessionMarks`；纠正 `summarizeSessionMarks` / `firstSentence` 的两处注释错误 |
+| 第 10 次 | 2026-09-28 | **新增第 5 个 Service `AuthService`**（2.5 节）：登录换不透明令牌（库里只存 SHA-256）、登出撤销、按令牌解析用户；记录登录里的四个安全细节（防时序攻击、防账号枚举、状态检查顺序、SecureRandom）；三个 Service 各新增一个分页查询方法（`listVocabularyPage` / `listWrongPage` / `listHistoryPage`） |
 
 ---
 
@@ -32,7 +33,9 @@
 
 ---
 
-## 二、四个 Service 的职责
+## 二、五个 Service 的职责
+
+> 🔖 **第 10 次修订修改：2.5 节新增 `AuthService`**（原为「四个 Service」）
 
 ### 2.1 `SysUserService`
 
@@ -112,6 +115,42 @@ List<AnswerRecord> listWrongByUser(Long userId, int limit);   // 错题本
 
 `listWrongByUser` 兑现 schema 里的一句设计声明：
 **错题本不需要额外的表**，`answer_record WHERE is_correct = 0` 就是错题本。
+
+### 2.5 `AuthService`（第 10 次修订新增）
+
+> 范围：登录换令牌、登出撤销令牌、按令牌解析用户。**不做**注册、改密码、刷新令牌
+> （见 `docs/backlog.md` **B-17**）。
+
+```java
+LoginResult login(String username, String password);   // 🔒 事务
+Long        resolveUserId(String rawToken);
+void        logout(String rawToken);
+int         revokeAll(Long userId);                    // 🔒 事务，目前无调用方
+```
+
+**为什么只有 `login` 需要事务**：它要「查用户 + 写一条令牌」，是跨两次数据库访问的
+一个逻辑单元。其余三个方法都是单表单条操作。
+
+**登录里的四个安全细节**（都不是可选的装饰）：
+
+| 细节 | 不做会怎样 |
+|---|---|
+| 用户不存在时**照样做一次等量 BCrypt 计算**再失败 | 「用户名不存在」响应明显更快 → 可用来**枚举有效账号**（时序攻击） |
+| 用户名不存在与密码错误**返回同一句提示** | 分开提示等于免费告诉攻击者哪些用户名已注册 |
+| **先校验密码、再校验 `status`** | 反过来的话，无需正确密码就能靠「账号已被禁用」判断该用户名存在 |
+| `SecureRandom` 生成 32 字节令牌 | `java.util.Random` 是线性同余发生器，观察若干输出即可推算后续序列 |
+
+**`resolveUserId` 的副作用做了节流**：只在距上次记录超过 **5 分钟**时才更新
+`last_used_at`。不节流的话，每个 API 请求都会多一次 UPDATE ——
+而鉴权是「读」动作，让读放大成写得不偿失。
+
+**`revokeAll` 目前没有调用方**，这是刻意的：它是给「改密码」准备的（改密必须把别处的
+登录踢下线）。`setPassword` 与 `revokeAll` 分属两个 Service，将来需要一个应用服务
+把两者组合进同一事务，所以**没有**把它们硬塞进一个方法里。
+
+**依赖方向的一处修正**：`UnauthenticatedException` 原本在 `api` 包。引入 `AuthService` 后，
+Service 层也要抛它，于是 `service` 要 import `api` —— 依赖方向倒置。
+已把它挪到新的 `exception` 包（它本身不携带 HTTP 语义，本来就不属于 Web 层）。
 
 ---
 

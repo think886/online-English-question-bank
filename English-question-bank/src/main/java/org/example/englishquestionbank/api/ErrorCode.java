@@ -34,6 +34,12 @@ public enum ErrorCode {
     /** 资源不存在。 */
     NOT_FOUND(HttpStatus.NOT_FOUND),
 
+    /** 请求方法不被支持 —— 例如对只接受 POST 的接口发了 GET。 */
+    METHOD_NOT_ALLOWED(HttpStatus.METHOD_NOT_ALLOWED),
+
+    /** 请求的 Content-Type 不被支持 —— 例如漏写 {@code application/json}。 */
+    UNSUPPORTED_MEDIA_TYPE(HttpStatus.UNSUPPORTED_MEDIA_TYPE),
+
     /** 状态冲突 —— 如会话已结束、重复交卷。 */
     CONFLICT(HttpStatus.CONFLICT),
 

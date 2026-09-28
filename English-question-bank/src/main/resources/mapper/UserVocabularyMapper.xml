@@ -61,4 +61,42 @@
          LIMIT #{limit}
     </select>
 
+    <!--
+      生词本分页查询。
+
+      分页怎么生效：这里【不写】LIMIT —— 由 MybatisPlusConfig 里的
+      PaginationInnerInterceptor 在 SQL 解析层自动补上 `LIMIT ?, ?`（预编译参数，无注入风险），
+      并另跑一条 COUNT 把总数写回传入的 IPage。
+      手写 LIMIT 反而会与插件打架。
+
+      resultType 必须写全限定名：VocabItem 在 dto.query 包，不在 type-aliases-package
+      指向的 entity 包下。写短名会报 ClassNotFoundException: Cannot find class: VocabItem
+      （这条坑 AGENTS.md 里记着）。
+
+      用 LEFT JOIN：user_vocabulary.word_id 可能为 NULL（划词时词典未收录），
+      此时仍要返回这一行（只是没有释义），不能因为 JOIN 不上就把生词丢掉。
+
+      排序 user_vocabulary.last_marked_at DESC 而不是 word.* ——
+      让用户最近标记的词排在最前，这是他打开生词本最想看的东西。
+      注意：ORDER BY 只影响记录查询；COUNT 查询里插件会自动去掉它（optimizeCountSql 默认开启），
+      否则 count 会白白多排一次序。
+    -->
+    <select id="selectVocabPage" resultType="org.example.englishquestionbank.dto.query.VocabItem">
+        SELECT v.normalized_form,
+               v.display_form,
+               v.translation,
+               v.mark_count,
+               v.mastery,
+               v.first_marked_at,
+               v.last_marked_at,
+               w.phonetic_uk,
+               w.phonetic_us,
+               w.part_of_speech,
+               w.tag
+          FROM user_vocabulary v
+          LEFT JOIN word w ON w.id = v.word_id
+         WHERE v.user_id = #{userId}
+         ORDER BY v.last_marked_at DESC
+    </select>
+
 </mapper>

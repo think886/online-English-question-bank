@@ -11,6 +11,8 @@
 | 第 2 次 | 2026-09-27 | **验证并确定 springdoc 版本为 3.1.1**（原第 1 次的版本风险已消除）；完成基础件与「开始练习」两个接口；新增第三节记录实测结果与安全红线检查；发现并登记「404 未区分」问题 |
 | 第 3 次 | 2026-09-27 | **接口全部完成并实测**：划词标记 / 提交答案 / 交卷 / 结果页 4 个接口；新增 `WordMarkController`，`PracticeController` 补齐 3 个方法；**修掉 `MarkedWordResponse` 缺 `questionId`/`sourceField` 导致标记无法回显定位的缺陷**；交卷与结果页加归属校验（Service 签名变更）；新增 `tools/api-smoke.ps1`（53 项全通过）；**修正本文档两个「## 八」重号的章节**；补齐第 5 节契约的真实字段名 |
 | 第 4 次 | 2026-09-27 | 【纠正】第 9.5 节把接口数写作「8 个」，**实际为 7 个**（数错原因：把类级 `@RequestMapping` 也当成了接口）。同时发现一个未登记的真实缺陷：**任何不存在的 URL 都返回 500 而非 404**，已登记为 `backlog.md` 的 **B-15** |
+| 第 5 次 | 2026-09-28 | **新增登录鉴权与查询接口**：接口 7 → **11 个**。新增 `POST /auth/login`、`POST /auth/logout`（**不透明令牌存库**，库里只存 SHA-256）、`GET /me/vocabulary`、`GET /me/wrong-questions`、`GET /practices`；**分页方案定为 P1（MyBatis-Plus `Page` 插件，offset 分页）**；重写第四节（认证不再是占位）；新增 5.4 / 5.5 节；`UnauthenticatedException` 从 `api` 包移到新 `exception` 包（修依赖方向倒置）；实测新增 15 项认证断言，冒烟测试 53 → **86 项** |
+| 第 6 次 | 2026-09-28 | **修掉 B-15**：不存在的 URL 由 500 改回 404、动词用错 → 405、Content-Type 不对 → 415。**关键纠正**：原先按 Spring 6.x 的印象以为这些异常都继承 `ErrorResponseException`，用 `javap` 查 Spring **7.0.9** 发现 `NoResourceFoundException` 只 `implements ErrorResponse`，于是改成 `instanceof ErrorResponse` 统一尊重异常自带状态码（不再维护类型清单）；3.2 节异常映射表重写；新增 `ErrorCode.METHOD_NOT_ALLOWED` / `UNSUPPORTED_MEDIA_TYPE`；冒烟测试 86 → **90 项** |
 
 ---
 
@@ -22,6 +24,9 @@
 | 2 | 鉴权 | **URL 按最终形态设计 + 临时占位** | 避免以后改鉴权时重写所有 URL |
 | 3 | 本轮范围 | **核心链路 + 结果页** | 先把主流程打通，查询类接口次之 |
 | 4 | 接口文档 | **引入 springdoc-openapi** | 可在浏览器直接试接口，调试成本低 |
+| 5 | 令牌形态（第 5 次修订） | **不透明随机令牌存库**，不用 JWT | 本项目每请求本就要查库，JWT 的「免查库」无意义；而 JWT **不可撤销**（登出/改密/封号后仍有效）。不透明令牌可撤销、可审计，且**零新依赖** |
+| 6 | 分页方案（第 5 次修订） | **P1 offset 分页**（MyBatis-Plus `Page` 插件） | 生词本/错题本是「个人几千条」量级，offset 够用；且诊断类列表**需要总数**，这正是 offset 相对 cursor 的优势。真到深翻页出问题再换 cursor 也只动一个 Mapper 方法 |
+| 7 | 令牌是否落库明文（第 5 次修订） | **只存 SHA-256** | 令牌等价于密码。明文入库则一次拖库就等于所有在线用户被冒充。刻意不用 BCrypt —— 令牌是高熵随机串，不存在爆破风险，而每请求都要校验，BCrypt 会把每次请求拖慢几十毫秒 |
 
 ---
 
@@ -68,50 +73,127 @@
 
 由 `@RestControllerAdvice` 集中处理，Service 层不需要感知 HTTP：
 
-| Service 抛出的异常 | HTTP | 业务码 | 说明 |
-|---|---|---|---|
-| `IllegalArgumentException` | 400 | `INVALID_PARAM` | 入参非法 |
-| （未登录，将来） | 401 | `UNAUTHENTICATED` | 认证失败 |
-| 数据不属于当前用户 | 403 | `FORBIDDEN` | 越权访问 |
-| 会话/题目/文章不存在 | 404 | `NOT_FOUND` | 资源不存在 |
-| `IllegalStateException` | 409 | `CONFLICT` | 状态冲突（会话已结束、重复交卷） |
-| `DuplicateKeyException` | 409 | `DUPLICATE` | 唯一键冲突（用户名已存在） |
-| 其他未预期异常 | 500 | `INTERNAL_ERROR` | **不把堆栈返回给前端**，只记日志 |
+> 🔖 **第 6 次修订重写：补上 Spring MVC 异常与 405/415，并纠正「404 会变 500」的缺陷**
+
+| 抛出者 | 异常 | HTTP | 业务码 | 说明 |
+|---|---|---|---|---|
+| Service | `IllegalArgumentException` | 400 | `INVALID_PARAM` | 入参非法 |
+| Service | `UnauthenticatedException` | 401 | `UNAUTHENTICATED` | 令牌无效 / 缺失身份 |
+| Service | `IllegalStateException` | 409 | `CONFLICT` | 状态冲突（会话已结束、重复交卷、越权） |
+| Service | `DuplicateKeyException` | 409 | `DUPLICATE` | 唯一键冲突（用户名已存在） |
+| **Spring MVC** | `MethodArgumentNotValidException` | 400 | `INVALID_PARAM` | Bean Validation 校验失败 |
+| **Spring MVC** | `NoResourceFoundException` | **404** | `NOT_FOUND` | **未知 URL / 静态资源缺失**（第 6 次修订前是 500） |
+| **Spring MVC** | `HttpRequestMethodNotSupportedException` | **405** | `METHOD_NOT_ALLOWED` | 动词用错（如 GET 打 POST 接口） |
+| **Spring MVC** | `HttpMediaTypeNotSupportedException` | **415** | `UNSUPPORTED_MEDIA_TYPE` | 漏写 `Content-Type: application/json` |
+| 其他 | 未预期异常 | 500 | `INTERNAL_ERROR` | **不把堆栈返回给前端**，只记日志 |
+
+**这张表怎么落地的**（第 6 次修订的关键设计）：
+
+前 6 行各有专属的 `@ExceptionHandler`。**第 6~8 行不写专属处理器**，而是由
+`handleFallback` 里的一句 `instanceof ErrorResponse` 统一兜住：
+
+```java
+if (e instanceof ErrorResponse errorResponse) {          // Spring 自带的异常都实现了它
+    HttpStatusCode status = errorResponse.getStatusCode(); // 尊重异常自己的状态码
+    ...
+}
+```
+
+**为什么用 `instanceof` 而不是「列出异常类型」**：这些 Spring 异常**没有共同父类**。
+用 `javap` 查 Spring Framework **7.0.9**（Boot 4.1.1 携带的版本）实测：
+
+```
+NoResourceFoundException
+  extends jakarta.servlet.ServletException
+  implements org.springframework.web.ErrorResponse      ← 不继承 ErrorResponseException！
+
+HttpRequestMethodNotSupportedException
+  extends jakarta.servlet.ServletException
+  implements org.springframework.web.ErrorResponse
+```
+
+【纠正】我最初按 Spring 6.x 的印象以为它们都继承 `ErrorResponseException`，
+只列了那一个类，结果 405 修好了、**404 仍然 500** —— 因为
+`NoResourceFoundException` 在 Spring 7 里根本不继承它。
+改成 `instanceof ErrorResponse` 后，**任何自带状态码的异常都被自动尊重，不需要维护清单**。
 
 > **为什么保留 Service 现有的异常类型**：它们是「入参错误 vs 状态错误」的天然区分，
 > 正好对应 400 与 409。若为此新建一套异常体系，Service 层就会被迫感知 HTTP 语义，
 > 反而耦合。
+>
+> **`@ExceptionHandler` 不能直接接 `ErrorResponse` 接口**：方法参数类型必须是
+> `Throwable` 的子类（Spring 靠它推断要接哪个异常），写接口会在启动时报
+> `No exception type is specified`。所以判断只能放在方法体里。
 
 ---
 
-## 四、认证上下文占位
+## 四、认证上下文
 
-### 4.1 URL 按最终形态设计
+> 🔖 **第 5 次修订修改：本节原为「认证上下文占位」，现已换成真实的令牌鉴权**
+
+### 4.1 URL 按最终形态设计（未变）
 
 ```
+✅ /api/auth/login               换取令牌（自身不需要认证）
 ✅ /api/me/vocabulary            用户自己的数据
+✅ /api/practices                我的练习历史
 ✅ /api/practices/{sessionId}    资源本身带 id，但归属由上下文校验
 ❌ /api/users/{userId}/vocabulary
 ❌ /api/practices?userId=123
 ```
 
-### 4.2 占位实现
+### 4.2 身份解析链（两条，令牌优先）
 
 ```java
 @Component
 public class CurrentUserProvider {
-    /** 本轮从请求头取；将来换成从 JWT 解析，调用方代码不变。 */
-    public Long currentUserId();
+    public Long currentUserId();      // Controller 只依赖这一个方法
+    public String currentRawToken();  // 仅登出接口需要（撤销「哪一个」令牌）
 }
 ```
 
-Controller 只依赖这个抽象，**不知道** userId 从哪来。将来换成 JWT 时：
+解析顺序：
 
-- 只需替换 `CurrentUserProvider` 的实现
-- Controller、URL、DTO 全部不动
+| 顺序 | 来源 | 说明 |
+|---|---|---|
+| 1 | `Authorization: Bearer <token>` | 真实鉴权。查 `user_token` 表校验「存在 + 未撤销 + 未过期」 |
+| 2 | `X-Debug-User-Id: <userId>` | **开发期回退，临时且不安全** |
 
-> ⚠️ 占位实现必须在代码与文档里明确标注为**临时且不安全**，
-> 避免误以为它是可上线的鉴权。相关缺口见 `docs/backlog.md` 的 **B-07**。
+Controller 依然只依赖这个抽象，**不知道**身份从哪来 —— 这正是第 1 次修订留下这个接口的价值：
+本次从「请求头」换成「令牌」时，**7 个既有接口的 Controller、URL、DTO 一行都没改**。
+
+### 4.3 为什么这个设计经得起换实现
+
+第 1 次修订时的判断是「URL 按有鉴权的样子设计，实现先占位，以后换实现不必重写接口」。
+本次验证了这个判断成立：新增令牌鉴权只做了一件事 ——
+**在 `CurrentUserProvider` 里加一个分支**，其余全部复用。
+
+同一次改动还顺手修了一处**依赖方向倒置**：`UnauthenticatedException` 原本放在 `api` 包，
+而 `AuthService`（Service 层）也需要抛它，于是 `service` 要 import `api`。
+已挪到新的 `exception` 包 —— 它本身不携带 HTTP 语义（映射成 401 是
+`GlobalExceptionHandler` 的职责），本来就不该住在 Web 层。
+
+### 4.4 令牌的技术细节
+
+| 项 | 取值 | 为什么 |
+|---|---|---|
+| 随机源 | `SecureRandom`，32 字节 | **不能用 `java.util.Random`** —— 它是线性同余发生器，观察到若干输出就能推算后续序列 |
+| 编码 | Base64 **URL 变体**，无填充 → 43 字符 | 标准 Base64 的 `+ / =` 在 URL、Cookie、日志里会被转义或截断 |
+| 库中存储 | **SHA-256 十六进制**（64 字符） | 令牌等价于密码；明文入库则一次拖库即所有在线用户被冒充 |
+| 有效期 | 7 天 | 开发期折中 |
+| 撤销 | `revoked_at` 置当前时间 | 登出、改密码、封号都能立刻失效 |
+| `last_used_at` | **节流更新**（距上次记录超过 5 分钟才写） | 不节流的话，每个 API 请求都会多一次 UPDATE —— 让「读」放大成「写」得不偿失 |
+| 防账号枚举 | 用户不存在时**照样做一次等量 BCrypt 计算**再失败 | 否则「用户名不存在」响应明显更快，可用来枚举有效账号（时序攻击） |
+| 状态检查顺序 | 先校验密码，**再**校验 `status` | 反过来的话，攻击者无需正确密码就能靠「账号已被禁用」判断该用户名存在 |
+
+### 4.5 ⚠️ 仍然遗留的不安全项
+
+`X-Debug-User-Id` 回退**必须在上线前删除** —— 它仍然是「谁都能自称是任意用户」。
+保留它只是为了不破坏 `tools/api-smoke.ps1` 的 86 项断言与手工调试的便利。
+删掉它时要同步改冒烟脚本。见 `docs/backlog.md` **B-07**。
+
+演示账号 `demo` / `demo123` 是**写在源码里的弱口令**（`SampleDataInitializer.DEMO_PASSWORD`），
+对外部署前必须删除该用户或强制改密。同样登记在 B-07。
 
 ---
 
@@ -337,15 +419,161 @@ Controller 只依赖这个抽象，**不知道** userId 从哪来。将来换成
 因此**不会出现在任何 `answers[].markedWords` 里**，但一定会出现在顶层 `data.markedWords` 里。
 两者都不是「全量」，需要全量带位置的请用 `GET /api/practices/{id}/marks`。
 
+### 5.4 认证（第 5 次修订新增）
+
+#### `POST /api/auth/login`
+
+请求：`{"username": "demo", "password": "demo123"}`
+
+响应 `200`：
+
+```json
+{
+  "code": "OK",
+  "data": {
+    "token": "3q2-7yXb...（43 字符）",
+    "expiresAt": "2026-10-05T20:05:45",
+    "expiresInSeconds": 604800,
+    "user": { "id": 9, "username": "demo", "nickname": "演示用户", "role": "USER" }
+  }
+}
+```
+
+> **为什么用 `POST` 而不是 `GET`**：密码不能出现在 URL 里（会进浏览器历史、代理日志、Referer 头）。
+> 这是硬性要求，不是风格偏好。
+>
+> **同时给绝对时间与相对秒数**：`expiresAt` 便于显示「有效期至 …」；
+> `expiresInSeconds` 便于做倒计时，且**不受客户端与服务器时钟偏差影响**，前端应优先用它。
+>
+> **用户名不存在与密码错误返回同一句 `用户名或密码错误`** —— 分开提示等于免费告诉攻击者
+> 哪些用户名已注册。真实原因记在服务端 debug 日志里。
+>
+> 响应里的 `user` **不含 `passwordHash`**（红线 1）。
+
+#### `POST /api/auth/logout`
+
+请求：带 `Authorization: Bearer <token>`，无请求体。
+
+响应 `200`：`{"code":"OK","message":"success","data":null}`
+
+> **幂等**：令牌不存在、已撤销、或压根没带，都返回成功。登出失败没有重试的意义，
+> 报错只会让前端多写一段无用的错误处理。
+
+### 5.5 查询接口与分页（第 5 次修订新增）
+
+三个清单接口共用同一套分页约定与响应外壳。
+
+#### 分页约定（P1 offset 分页）
+
+| 项 | 说明 |
+|---|---|
+| 请求参数 | `?page=1&size=20` |
+| 归一化 | `page < 1` → 1；`size < 1` → 20；`size > 100` → 100。**非法值被静默修正，不报错** |
+| 响应 `size` | **以它为准**，可能小于你请求的值（被上限截断） |
+| `hasNext` | 直接用它判断「有没有下一页」，不必自己算 `page < pages`（边界容易算错） |
+| 页码超范围 | 返回**空列表**，不是绕回第一页（`overflow=false`） |
+
+> **⚠️ 为什么必须归一化 `size`**：MyBatis-Plus 的 `Page` 在 `size <= 0` 时
+> **不做分页、直接返回全表**，而且不报错。`?size=0` 就能把整张表拉出来。
+> 归一化集中在 `support.Paging`，任何接口都绕不过去。
+>
+> **为什么 offset 而不是 cursor**：生词本/错题本是「个人几千条」量级，offset 完全够用；
+> 而且诊断类列表**需要显示总数**（「我一共积累了多少个词」），这正是 offset 相对 cursor 的优势。
+> 若将来深翻页真的成为瓶颈，换 cursor 只影响一个 Mapper 方法。
+
+#### `GET /api/me/vocabulary` —— 我的生词本
+
+```json
+{
+  "code": "OK",
+  "data": {
+    "records": [
+      { "normalizedForm": "abandon", "displayForm": "abandon",
+        "translation": "a. 被抛弃的, 无约束的", "phoneticUk": "ә'bændәn",
+        "phoneticUs": null, "partOfSpeech": "a.", "tag": "cet4 cet6 ky",
+        "markCount": 1, "mastery": 0,
+        "firstMarkedAt": "...", "lastMarkedAt": "..." }
+    ],
+    "total": 3, "page": 1, "size": 20, "pages": 1, "hasNext": false
+  }
+}
+```
+
+> 按 `last_marked_at` 倒序 —— 用户最近标的词排最前，这是他打开生词本最想看的东西。
+>
+> 用 `LEFT JOIN word`：`user_vocabulary.word_id` 可能为 `NULL`（划词时词典未收录），
+> 此时仍要返回这一行（只是 `translation` 为 `null`），**不能因为 JOIN 不上就把生词丢掉**。
+
+#### `GET /api/me/wrong-questions` —— 我的错题本
+
+```json
+{
+  "code": "OK",
+  "data": {
+    "records": [
+      { "answerRecordId": 42, "sessionId": 61, "questionId": 1,
+        "questionType": "READING", "stem": "What is the main idea...",
+        "sourceText": null, "userAnswer": "D",
+        "correctOptionKey": "B", "referenceAnswer": null, "analysis": null,
+        "passageId": 1, "passageTitle": "Community Gardens",
+        "answeredAt": "..." }
+    ],
+    "total": 3, "page": 1, "size": 20, "pages": 1, "hasNext": false
+  }
+}
+```
+
+> 🔒 **本接口只返回 `FINISHED` 会话里的错题。** 这不是「顺手加的」条件 ——
+> 去掉它，练习进行中就能通过这个接口拿到正确答案与解析，等于绕开结果页提前看答案，
+> 直接违反红线 2。过滤条件写在 `AnswerRecordMapper.xml` 的 SQL 里，
+> **不放在 Service 或 Controller**，这样任何调用路径都绕不过。
+> 冒烟测试用「未交卷时总数不变、交卷后 +1」的前后差值专门验证了这条。
+>
+> **只取 `is_correct = 0`**，刻意不写 `is_correct != 1`：翻译题在评分完成前
+> `is_correct` 是 `NULL`，「还没判分」和「做错了」是两回事。
+>
+> 这里出现正确答案是**安全的**（只含已交卷会话），详见 5.3 节红线 2 的说明。
+
+#### `GET /api/practices` —— 我的练习历史
+
+```json
+{
+  "code": "OK",
+  "data": {
+    "records": [
+      { "sessionId": 61, "mode": "READING", "status": "FINISHED",
+        "passageTitle": "Community Gardens",
+        "totalCount": 2, "answeredCount": 2, "correctCount": 0,
+        "score": 0, "maxScore": 2, "markedWordCount": 2,
+        "startedAt": "...", "finishedAt": "...", "durationMs": 1234 }
+    ],
+    "total": 3, "page": 1, "size": 20, "pages": 1, "hasNext": false
+  }
+}
+```
+
+> **包含未交卷的会话**（`IN_PROGRESS`）。这是刻意的：用户中途关掉浏览器是常态，
+> 历史列表里应能看到它并「继续做」，而不是让它凭空消失。
+> 前端凭 `status` 决定显示「继续」还是「查看结果」。
+>
+> **必须用 `LEFT JOIN passage`**：翻译题练习的 `passage_id` 是 `NULL`，
+> 写成 `INNER JOIN` 会让翻译练习在历史里**整条消失** —— 而且不报错，只是「记录没了」，
+> 属于最难发现的一类 bug。冒烟测试专门断言了「翻译会话仍在列表里」。
+>
+> **排序键是 `started_at DESC, id DESC`**：只按时间排序在同秒创建多条会话时顺序不确定，
+> 加 `id` 作第二排序键才能保证分页时同一条记录不会在第 1 页和第 2 页各出现一次 ——
+> 这是 offset 分页的经典坑。
+
 ---
 
 ## 六、DTO 分层
 
-> 🔖 **第 3 次修订修改：补齐实际文件清单**
+> 🔖 **第 5 次修订修改：补齐认证与查询接口的 DTO**
 
 ```
 api/dto/
 ├── request/    请求体（自带 Bean Validation 注解）
+│   ├── LoginRequest              username / password
 │   ├── StartReadingRequest       passageId
 │   ├── StartTranslationRequest   count
 │   ├── MarkWordRequest           questionId? / sourceField / surfaceForm
@@ -353,6 +581,9 @@ api/dto/
 │   └── SubmitAnswerRequest       questionId / userAnswer
 └── response/   响应体（只含可以给前端的字段）
     ├── ApiResponse<T>            统一外壳（注意：在 api/ 包下，不在 response/ 下）
+    ├── PageResponse<T>           分页外壳（records/total/page/size/pages/hasNext）
+    ├── UserResponse              用户信息（**刻意没有 passwordHash**）
+    ├── LoginResponse             token / expiresAt / expiresInSeconds / user
     ├── PracticeStartResponse     开始练习的响应
     ├── PassageResponse
     ├── QuestionResponse
@@ -363,8 +594,19 @@ api/dto/
     ├── AnswerResultResponse      questionId / isCorrect / score / maxScore / gradingStatus / firstSubmit
     ├── SessionSummaryResponse    会话汇总（交卷与结果页共用）
     ├── AnswerDetailResponse      结果页单题明细（**全项目唯一返回正确答案之处**）
-    └── PracticeResultResponse    结果页整体
+    ├── PracticeResultResponse    结果页整体
+    ├── VocabItemResponse         生词本条目
+    ├── WrongQuestionResponse     错题本条目（仅已交卷会话）
+    └── PracticeHistoryResponse   练习历史条目
 ```
+
+**Service 层的 DTO 也分了三类**（第 5 次修订）：
+
+| 类型 | 风格 | 在哪 | 为什么 |
+|---|---|---|---|
+| 入参 / 出参 | `record` | `dto/` | 值语义，不可变，简洁 |
+| 分页结果 | `record` | `dto/PageResult<T>` | **只用 JDK 类型** —— 不把 MyBatis-Plus 的 `IPage` 泄漏到 API 层 |
+| **行映射类型** | **`@Data` 类** | `dto/query/` | MyBatis 靠 **setter** 注入列值，record 没有 setter。用 record 就得按构造器参数顺序映射，SQL 列顺序一变就**静默错位**。放独立子包让这个区别在结构上就看得见 |
 
 **为什么不复用 Service 的 `dto` 包**：
 
@@ -400,19 +642,25 @@ api/dto/
 
 ## 八、实现进度
 
-> 🔖 **第 2 次修订新增；第 3 次修订更新为全部完成**
+> 🔖 **第 2 次修订新增；第 5 次修订更新（新增第 10~14 步）**
 
 | 步 | 内容 | 状态 |
 |---|---|---|
 | 1 | 验证 springdoc 3.x 能在 Boot 4.1.1 启动 | ✅ 完成，采用 3.1.1 |
 | 2 | 统一响应体 + 全局异常映射 | ✅ 完成 |
 | 3 | `CurrentUserProvider` 占位 | ✅ 完成 |
-| 4 | API DTO（响应模型 + 转换） | ✅ 完成（请求 4 个 + 响应 12 个） |
+| 4 | API DTO（响应模型 + 转换） | ✅ 完成 |
 | 5 | 开始练习两个接口（reading / translation） | ✅ 完成 |
 | 6 | 划词标记接口（POST + GET） | ✅ 完成 |
 | 7 | 提交答案 + 交卷接口 | ✅ 完成 |
 | 8 | 结果页接口 | ✅ 完成 |
-| 9 | 全链路实测 | ✅ 完成：`tools/api-smoke.ps1` **53 项全通过** |
+| 9 | 全链路实测（53 项） | ✅ 完成 |
+| 10 | **T0：OpenAPI 安全方案，让 Swagger 出现 Authorize 按钮** | ✅ 完成（第 5 次修订） |
+| 11 | **`user_token` 表 + `AuthService`（BCrypt + 不透明令牌）** | ✅ 完成 |
+| 12 | **`POST /auth/login`、`POST /auth/logout` + `CurrentUserProvider` 升级** | ✅ 完成 |
+| 13 | **接 MyBatis-Plus `Page` 插件（P1 分页）** | ✅ 完成 |
+| 14 | **三个查询接口（生词本 / 错题本 / 历史）** | ✅ 完成 |
+| 15 | 全链路实测（86 项，含第 10~14 步） | ✅ 完成 |
 
 ### 已实现文件
 
@@ -421,13 +669,25 @@ api/
 ├── ErrorCode.java                业务码 + 绑定的 HTTP 状态码
 ├── ApiResponse.java              统一响应体（成功/失败同构）
 ├── GlobalExceptionHandler.java   Service 异常 → HTTP 的集中映射
-├── UnauthenticatedException.java
-├── CurrentUserProvider.java      身份占位（从 X-Debug-User-Id 取）
+├── CurrentUserProvider.java      身份解析（**令牌优先，X-Debug-User-Id 回退**）
 ├── controller/
-│   ├── PracticeController.java   开始阅读/翻译、提交答案、交卷、结果页
-│   └── WordMarkController.java   划词标记（POST + GET，挂在 /api/practices/{id}/marks）
+│   ├── AuthController.java       登录 / 登出
+│   ├── PracticeController.java   开始阅读/翻译、练习历史、提交答案、交卷、结果页
+│   ├── WordMarkController.java   划词标记（POST + GET，挂在 /api/practices/{id}/marks）
+│   └── MeController.java         生词本 / 错题本
 └── dto/                          见第六节
+
+exception/
+└── UnauthenticatedException.java 第 5 次修订从 api 包移来（修依赖方向倒置）
+
+config/
+├── OpenApiConfig.java            OpenAPI 安全方案（永久配置）
+└── MybatisPlusConfig.java        分页插件（永久配置）
 ```
+
+> ⚠️ `config` 包此前只有开发期自检类；**第 5 次修订起它里面多了两个永久配置类**
+> （`OpenApiConfig`、`MybatisPlusConfig`）。`docs/README.md` 第三节的临时类清单已注明这一点，
+> 清理自检类时**不要连它们一起删掉**。
 
 **Controller 与 Service 的职责边界（第 3 次修订明确）**：
 
@@ -598,6 +858,55 @@ Smoke 测试新增 3 项断言（题干标记带 `questionId`、带 `sourceField
 
 这个坑对将来加自检类的人同样适用，已同步记进根目录 `AGENTS.md`。
 
+### 9.8 登录鉴权实测（第 5 次修订新增）
+
+实测日期 **2026-09-28**，独立 15 项断言全通过：
+
+| 场景 | 期望 | 实测 |
+|---|---|---|
+| Swagger 安全方案 | 两个 scheme | `schemes = X-Debug-User-Id, bearerAuth` ✅ |
+| `demo` / `demo123` 登录 | 200 + 令牌 | 200，token 43 字符 ✅ |
+| 登录响应不含密码哈希 | 无 `passwordHash` / `$2a$` | 确认不含 ✅ |
+| 密码错误 | 401 | 401 `用户名或密码错误` ✅ |
+| **用户名不存在** | 401，**提示与密码错误完全一致** | 401，消息逐字相同 ✅ |
+| Bearer 令牌访问受保护接口 | 不再是 401 | 身份通过 ✅ |
+| 伪造令牌 | 401 | 401 `登录令牌无效、已过期或已登出` ✅ |
+| `X-Debug-User-Id` 回退 | 仍可用 | 仍可用 ✅ |
+| 完全不带身份 | 401 | 401 ✅ |
+| **明文令牌是否在库里** | 不在 | `明文命中 = 0` ✅ |
+| **库里存的是否为 SHA-256** | 是 | 用 MySQL 的 `SHA2(token,256)` **独立计算**比对，命中 ✅ |
+| 登出 | 200 | 200 ✅ |
+| 登出后同一令牌 | 401 | 401 ✅ |
+| 重复登出 | 200（幂等） | 200 ✅ |
+| 令牌长度 | 64 字符十六进制 | 64 ✅ |
+
+> 其中「用 MySQL 的 `SHA2()` 独立算一遍再比对」这一条是有意设计的：
+> 它验证的不是「我们存了点什么」，而是**Java 侧的 SHA-256 十六进制实现与标准算法一致**。
+> 如果 Java 代码里少写了补零（`0x0A` 输出成 `a` 而不是 `0a`），这条断言就会失败。
+
+### 9.9 查询接口与分页实测（第 5 次修订新增）
+
+`tools/api-smoke.ps1` 第三部分共 **30 项断言**全通过。几条值得单独说的：
+
+| 断言 | 为什么重要 |
+|---|---|
+| **「未交卷的错题不进错题本」** | 用**真实数据的前后差值**验证（先记下 total，新开会话答错、不交卷，再查 total **不变**；交卷后 total **+1**）。这是红线 2 的直接验证，只靠代码审阅不算数 |
+| **翻译会话仍在历史列表里** | 验证 `LEFT JOIN` 没写错。写成 `INNER JOIN` 会让翻译练习整条消失，且**不报错** |
+| `size=0` → 实际生效 20 | 验证 `Paging` 挡住了 MyBatis-Plus「`size<=0` 不做分页、返回全表」的坑 |
+| `size=99999` → 实际生效 100 | 验证插件单页上限生效 |
+| `page=0` → 实际生效 1 | 验证页码归一化 |
+| 页码超范围 → 空列表 | 验证 `overflow=false`（不是绕回第一页） |
+| `hasNext` 与 `pages` 自洽 | 第一页 true、最后一页 false |
+| 另一个用户的生词本为空 | 验证身份隔离，数据不串 |
+| 错题本按作答时间倒序 | 最新做错的那条排第一（用 `userAnswer = 'D'` 识别） |
+
+**踩到的两个自身错误**（都是测试脚本的问题，不是产品代码）：
+
+1. 断言 `records.PSObject.Properties.Name -contains 'phoneticUk'` —— `records` 是**数组**，
+   数组的属性列表里没有业务字段。必须先取 `records[0]` 再问它有哪些属性。
+2. 断言详情里用 `(... | Where-Object {...}).Count` 打印条数，单条时输出**空值**
+   （PS 5.1 的 `.Count` 坑，见 9.5）。改用 `Count-Of` 包装。
+
 ---
 
 ## 十、分步实现顺序
@@ -625,18 +934,19 @@ Smoke 测试新增 3 项断言（题干标记带 `questionId`、带 `sourceField
 
 ## 十一、未决事项与风险
 
-> 🔖 **第 3 次修订更新**
+> 🔖 **第 5 次修订更新**
 
 | 项 | 说明 |
 |---|---|
-| **鉴权（B-07）** | 仍是临时占位。Session vs JWT 未定，但 URL 形态已按有鉴权的样子设计，将来不必重写 |
-| **翻译题评分流程** | 接口按**异步**设计（提交返回 `PENDING`，前端轮询/或交卷后触发）。LLM 未接入，`grading_status` 的 `GRADING` / `DONE` / `FAILED` 三态尚无产生者 |
-| **错误码精度（B-12）** | 「资源不存在」与「越权」目前都是 409：不存在的文章、不属于自己的会话都落到 `IllegalStateException` → 409。语义上应分别是 404 与 403 |
-| **查询类接口** | `GET /api/me/vocabulary`（生词本）、错题本、历史记录**尚未实现**。底层服务方法都已就绪（`WordMarkService.listVocabulary`、`AnswerService.listWrongByUser`），只差 Controller 与分页 |
-| **分页** | 清单类接口一旦出现就必须定分页方案（MyBatis-Plus `Page` 插件），目前尚未引入 |
+| **注册 / 改密码接口缺失（B-17）** | 登录有了，但新用户无法自助注册；也没有改密码接口。后者还牵出一个安全问题：改密码必须**同时撤销全部既有令牌**，属跨表操作 |
+| **`X-Debug-User-Id` 回退（B-07）** | **仍然临时且不安全**，上线前必须删除（会连带改 86 项冒烟断言）。演示账号 `demo/demo123` 是写在源码里的弱口令，同样必须处理 |
+| **令牌表缺清理（B-18）** | 过期令牌行永久留在 `user_token`；同一用户可无限登录，没有并发登录上限 |
+| **错误码精度（B-12）** | 「资源不存在」与「越权」仍都是 409（不存在的文章、不属于自己的会话）。语义上应分别是 404 与 403 |
+| **404 变 500（B-15）** | 任何不存在的 URL 都返回 500 而非 404 —— `NoResourceFoundException` 被 `Exception` 兜底吞掉。**本次未修** |
+| **翻译题评分流程** | 接口按**异步**设计（提交返回 `PENDING`）。LLM 未接入，`grading_status` 的 `GRADING` / `DONE` / `FAILED` 三态尚无产生者。注意错题本**只取 `is_correct = 0`**，所以待评分的翻译题不会误入 |
 | **前端跨域** | 前端分离时需配 CORS，方案未定（允许哪些来源） |
-| **`X-Debug-User-Id` 占位** | **临时且不安全**，接入鉴权前不得对外部署 |
-| **开发期自检类与 smoke 脚本** | `config` 包下的自检类与 `tools/api-smoke.ps1` 都属开发工具，上线前需删除或加 `@Profile("dev")`（见 `docs/README.md` 第三节、backlog B-10） |
+| **开发期自检类与 smoke 脚本（B-10）** | `config` 包下的自检类与 `tools/api-smoke.ps1` 属开发工具，上线前需删除或加 `@Profile("dev")`。⚠️ 但 `config/OpenApiConfig.java` 与 `config/MybatisPlusConfig.java` 是**永久配置**，别一起删 |
+| **令牌放在哪（前端）** | 后端只负责签发。前端该放 HttpOnly Cookie 还是内存，**尚未讨论** —— 放 localStorage 会扩大 XSS 的影响面 |
 
 ---
 
@@ -646,6 +956,7 @@ Smoke 测试新增 3 项断言（题干标记带 `questionId`、带 `sourceField
 |---|---|
 | `docs/service-layer.md` | Service 层设计（本层的直接依赖） |
 | `docs/orm-layer.md` | ORM 层设计：SQL 书写规范、XML 现状 |
-| `docs/backlog.md` | 待办清单（B-07 鉴权、B-05 翻译评分等） |
+| `docs/backlog.md` | 待办清单（B-07 鉴权收尾、B-17 注册、B-05 翻译评分等） |
 | `docs/README.md` | 文档索引与修订约定 |
-| `tools/api-smoke.ps1` | 全链路接口冒烟测试（53 项断言） |
+| `docs/idea-classpath-troubleshooting.md` | IDEA 报「程序包不存在」的排查手册 |
+| `tools/api-smoke.ps1` | 全链路接口冒烟测试（**86 项**断言，覆盖三条链路） |

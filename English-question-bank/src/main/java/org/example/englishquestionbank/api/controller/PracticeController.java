@@ -11,6 +11,8 @@ import org.example.englishquestionbank.api.dto.request.StartReadingRequest;
 import org.example.englishquestionbank.api.dto.request.StartTranslationRequest;
 import org.example.englishquestionbank.api.dto.request.SubmitAnswerRequest;
 import org.example.englishquestionbank.api.dto.response.AnswerResultResponse;
+import org.example.englishquestionbank.api.dto.response.PageResponse;
+import org.example.englishquestionbank.api.dto.response.PracticeHistoryResponse;
 import org.example.englishquestionbank.api.dto.response.PracticeResultResponse;
 import org.example.englishquestionbank.api.dto.response.PracticeStartResponse;
 import org.example.englishquestionbank.api.dto.response.SessionSummaryResponse;
@@ -27,6 +29,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -147,5 +150,30 @@ public class PracticeController {
         Long userId = currentUser.currentUserId();
         PracticeResult result = practiceSessionService.loadResult(userId, sessionId);
         return ResponseEntity.ok(ApiResponse.ok(PracticeResultResponse.from(result)));
+    }
+
+    /**
+     * 练习历史 —— 当前用户做过的全部练习，按开始时间倒序。
+     *
+     * <p><b>为什么它挂在 {@code /api/practices} 而不是 {@code /api/me/practices}</b>：
+     * 返回的就是「练习会话」这一资源本身的集合，归属由令牌决定；
+     * 而 {@code /api/me/*} 留给「我的」这类派生视图（生词本、错题本）。
+     *
+     * <p>URL 里同样没有 {@code userId}（红线 3）。
+     *
+     * <p><b>包含未交卷的会话</b>：用户中途关掉浏览器是常态，
+     * 列表里应能看到它并继续做。前端凭 {@code status} 决定显示「继续」还是「查看结果」。
+     */
+    @GetMapping
+    @Operation(summary = "我的练习历史（分页）",
+            description = "按开始时间倒序，含未交卷的会话。带来源文章标题便于辨识")
+    public ResponseEntity<ApiResponse<PageResponse<PracticeHistoryResponse>>> history(
+            @RequestParam(defaultValue = "1") long page,
+            @RequestParam(defaultValue = "20") long size) {
+
+        Long userId = currentUser.currentUserId();
+        return ResponseEntity.ok(ApiResponse.ok(PageResponse.from(
+                practiceSessionService.listHistoryPage(userId, page, size),
+                PracticeHistoryResponse::from)));
     }
 }

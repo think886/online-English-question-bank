@@ -11,6 +11,7 @@ import org.example.englishquestionbank.mapper.PassageMapper;
 import org.example.englishquestionbank.mapper.QuestionMapper;
 import org.example.englishquestionbank.mapper.QuestionOptionMapper;
 import org.example.englishquestionbank.service.SysUserService;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
@@ -47,6 +48,14 @@ public class SampleDataInitializer implements CommandLineRunner {
     /** 演示用户的登录名。 */
     public static final String DEMO_USERNAME = "demo";
 
+    /**
+     * 演示用户的初始密码（开发期用）。
+     *
+     * <p>⚠️ 这是<b>公开写在源码里的弱口令</b>，只为了让开发机上能立刻登录一次。
+     * 对外部署前必须删掉演示用户，或强制改密（见 {@code docs/backlog.md} B-07）。
+     */
+    public static final String DEMO_PASSWORD = "demo123";
+
     private static final String PASSAGE_TITLE = "Community Gardens";
     private static final String PASSAGE_CONTENT = """
             Many cities are turning unused land into community gardens. These small plots,
@@ -78,8 +87,22 @@ public class SampleDataInitializer implements CommandLineRunner {
     private final QuestionMapper questionMapper;
     private final QuestionOptionMapper questionOptionMapper;
 
+    /**
+     * 开发期便利开关，见 {@code application.yml} 的 {@code app.dev-mode}。
+     *
+     * <p>这里用<b>字段注入</b>而不是构造器注入：本类用了
+     * {@code @RequiredArgsConstructor}，而 Lombok <b>默认不会把 {@code @Value}
+     * 复制到生成的构造器参数上</b>（需要额外配 {@code lombok.copyableAnnotations}）。
+     * 为一个标量配置项去改 Lombok 全局配置不划算，字段注入足够。
+     *
+     * <p>兜底默认值是 {@code false} —— 配置缺失时行为是安全的那种。
+     */
+    @Value("${app.dev-mode:false}")
+    private boolean devMode;
+
     @Override
     public void run(String... args) {
+        warnIfDevMode();
         try {
             SysUser demoUser = ensureDemoUser();
             if (demoUser == null) {
@@ -92,16 +115,60 @@ public class SampleDataInitializer implements CommandLineRunner {
         }
     }
 
-    /** 确保存在演示用户。返回 null 表示创建失败（已记录日志）。 */
+    /**
+     * 开发期开关打开时，在启动日志里<strong>大声告警</strong>。
+     *
+     * <p><b>为什么值得专门写一段</b>：这个开关打开时，任何人都能自称是任意用户。
+     * 它默认就是开的（因为还没有注册接口，见 B-17），所以很容易一路带到线上而没人注意。
+     * 一行醒目的日志是最低成本的提醒 —— 尤其是将来换人接手或自己隔几周回来时。
+     */
+    private void warnIfDevMode() {
+        if (devMode) {
+            log.warn("==============================================================");
+            log.warn("⚠️  开发期便利功能已启用（app.dev-mode=true）");
+            log.warn("    ① 请求头 X-Debug-User-Id 可直接冒充任意用户（见 CurrentUserProvider）");
+            log.warn("    ② 演示账号 {} 的弱口令 {} 会被补设", DEMO_USERNAME, DEMO_PASSWORD);
+            log.warn("    ⚠️ 这些都【不可用于对外环境】。上线前把 application.yml 里");
+            log.warn("       app.dev-mode 改为 false（见 docs/backlog.md B-07）");
+            log.warn("==============================================================");
+        } else {
+            log.info("开发期便利功能已关闭（app.dev-mode=false）：只认 Authorization: Bearer 令牌");
+        }
+    }
+
+    /**
+     * 确保存在演示用户，并且它<b>一定有一个可用的密码</b>。
+     *
+     * <p><b>为什么要单独补密码</b>：本项目的演示用户是先于登录功能存在的，
+     * 当时 {@code password_hash} 保持为空。如果只在「创建用户」时设密码，
+     * 那么开发机上那个已经存在的 demo 用户永远没有密码，
+     * 登录接口会一直返回「用户名或密码错误」，而现象很难联想到「密码从来没设过」。
+     * 所以这里对「已存在」的分支也要检查一次。
+     *
+     * <p><b>为什么不覆盖已有密码</b>：只修补空值。否则每次重启都会把用户
+     * 自己改过的密码重置回 {@link #DEMO_PASSWORD}，属于严重的数据破坏。
+     */
     private SysUser ensureDemoUser() {
         SysUser existing = sysUserService.findByUsername(DEMO_USERNAME);
-        if (existing != null) {
+        if (existing == null) {
+            existing = sysUserService.register(DEMO_USERNAME, "演示用户");
+            log.info("示例数据：已创建演示用户 '{}' id={}", DEMO_USERNAME, existing.getId());
+        } else {
             log.info("示例数据：演示用户 '{}' 已存在 id={}", DEMO_USERNAME, existing.getId());
-            return existing;
         }
-        SysUser created = sysUserService.register(DEMO_USERNAME, "演示用户");
-        log.info("示例数据：已创建演示用户 '{}' id={}", DEMO_USERNAME, created.getId());
-        return created;
+
+        if (existing.getPasswordHash() == null || existing.getPasswordHash().isBlank()) {
+            if (!devMode) {
+                // 关闭状态下【不】补设弱口令。演示账号于是无法登录 —— 这是正确行为：
+                // 要登录就得先有注册接口（backlog B-17），而不是靠一个写死在源码里的密码。
+                log.info("示例数据：演示用户 '{}' 没有密码，且 app.dev-mode=false，因此不补设初始密码", DEMO_USERNAME);
+            } else {
+                sysUserService.setPassword(existing.getId(), DEMO_PASSWORD);
+                log.info("示例数据：演示用户 '{}' 原本没有密码，已补设初始密码（开发期弱口令，见 backlog B-07）",
+                        DEMO_USERNAME);
+            }
+        }
+        return existing;
     }
 
     /** 确保存在示例文章及其题目。已存在则整体跳过。 */

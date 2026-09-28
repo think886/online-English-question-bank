@@ -1,7 +1,9 @@
 package org.example.englishquestionbank.service;
 
+import org.example.englishquestionbank.dto.PageResult;
 import org.example.englishquestionbank.dto.PracticeContent;
 import org.example.englishquestionbank.dto.PracticeResult;
+import org.example.englishquestionbank.dto.query.PracticeHistoryItem;
 import org.example.englishquestionbank.entity.PracticeSession;
 
 /**
@@ -143,4 +145,24 @@ public interface PracticeSessionService {
      * @throws IllegalStateException    会话不属于该用户，或尚未交卷
      */
     PracticeResult loadResult(Long userId, Long sessionId);
+
+    /**
+     * 练习历史<b>分页</b>查询 —— 某用户做过的全部练习，按开始时间倒序。
+     *
+     * <p><b>包含未交卷的会话</b>（{@code IN_PROGRESS}）。这是刻意的：
+     * 用户中途关掉浏览器是常态，历史列表里应当能看到它并「继续做」，
+     * 而不是让它凭空消失。前端凭 {@code status} 字段决定显示「继续」还是「查看结果」。
+     *
+     * <p>条目里带 {@code passageTitle} 而非只有 {@code passageId}：
+     * 列表里显示「阅读练习 · 2 题 · 1 分」无法让人回忆起是哪一篇。
+     *
+     * <p>页码与每页条数的归一化规则同 {@code WordMarkService#listVocabularyPage}。
+     *
+     * @param userId 用户 id
+     * @param page   页码，从 1 开始
+     * @param size   每页条数
+     * @return 分页结果，按开始时间倒序
+     * @throws IllegalArgumentException userId 为空
+     */
+    PageResult<PracticeHistoryItem> listHistoryPage(Long userId, long page, long size);
 }

@@ -1,6 +1,8 @@
 package org.example.englishquestionbank.service;
 
 import org.example.englishquestionbank.dto.AnswerResult;
+import org.example.englishquestionbank.dto.PageResult;
+import org.example.englishquestionbank.dto.query.WrongQuestionItem;
 import org.example.englishquestionbank.entity.AnswerRecord;
 
 import java.util.List;
@@ -64,4 +66,25 @@ public interface AnswerService {
      * @return 答错的作答记录
      */
     List<AnswerRecord> listWrongByUser(Long userId, int limit);
+
+    /**
+     * 错题本<b>分页</b>查询 —— 带题干、正确答案、解析、来源文章。
+     *
+     * <p><b>关键约束：只取已交卷会话里的错题。</b>
+     * 练习进行中的错题不会进错题本，否则这个接口就成了
+     * 「绕开结果页提前看答案」的入口（违反红线 2）。
+     * 过滤条件写在 {@code AnswerRecordMapper.xml} 的 SQL 里。
+     *
+     * <p>翻译题在评分完成前 {@code is_correct} 为 {@code NULL}，
+     * 那种「还没判分」的记录既不算对也不算错，不会出现在错题本里。
+     *
+     * <p>页码与每页条数的归一化规则同 {@code WordMarkService#listVocabularyPage}。
+     *
+     * @param userId 用户 id
+     * @param page   页码，从 1 开始
+     * @param size   每页条数
+     * @return 分页结果，按作答时间倒序
+     * @throws IllegalArgumentException userId 为空
+     */
+    PageResult<WrongQuestionItem> listWrongPage(Long userId, long page, long size);
 }

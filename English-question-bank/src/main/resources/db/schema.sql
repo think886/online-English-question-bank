@@ -29,6 +29,7 @@ DROP TABLE IF EXISTS word;
 DROP TABLE IF EXISTS question_option;
 DROP TABLE IF EXISTS question;
 DROP TABLE IF EXISTS passage;
+DROP TABLE IF EXISTS user_token;
 DROP TABLE IF EXISTS sys_user;
 
 
@@ -50,6 +51,32 @@ CREATE TABLE sys_user (
   PRIMARY KEY (id),
   UNIQUE KEY uk_user_username (username)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户';
+
+
+-- -----------------------------------------------------------------------------
+--  登录令牌（第 12 张表，随 03 号增量变更加入）
+--
+--  用「不透明随机令牌」而不是 JWT：本项目每个请求本来就要查库，
+--  JWT 的「免查库」优势无意义，而它不可撤销；不透明令牌天然可撤销且零新依赖。
+--
+--  ⚠ 库里存的是令牌的 SHA-256，不是令牌本身 —— 令牌等价于密码，
+--    明文入库则拖库即等于所有在线用户被冒充。
+--    刻意不用 BCrypt：BCrypt 故意慢，适合低熵口令；令牌是 256 位高熵随机串，
+--    且每个请求都要校验，用 BCrypt 会平白拖慢每一次请求。
+-- -----------------------------------------------------------------------------
+CREATE TABLE user_token (
+  id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  user_id      BIGINT UNSIGNED NOT NULL                  COMMENT '令牌属于哪个用户',
+  token_hash   CHAR(64)        NOT NULL                  COMMENT '令牌的 SHA-256 十六进制（64 字符），绝不存明文',
+  expires_at   DATETIME        NOT NULL                  COMMENT '过期时间',
+  revoked_at   DATETIME        NULL                      COMMENT '登出/改密码时置为当前时间即失效；NULL 表示有效',
+  created_at   DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_used_at DATETIME        NULL                      COMMENT '最后一次使用时间，便于排查异常登录',
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_token_hash (token_hash),
+  KEY idx_token_user (user_id),
+  CONSTRAINT fk_token_user FOREIGN KEY (user_id) REFERENCES sys_user(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='登录令牌';
 
 
 -- =============================================================================

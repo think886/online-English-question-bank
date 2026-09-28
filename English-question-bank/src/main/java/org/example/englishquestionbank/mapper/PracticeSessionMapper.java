@@ -1,9 +1,11 @@
 package org.example.englishquestionbank.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.example.englishquestionbank.dto.SessionSummary;
+import org.example.englishquestionbank.dto.query.PracticeHistoryItem;
 import org.example.englishquestionbank.entity.PracticeSession;
 
 /**
@@ -49,4 +51,21 @@ public interface PracticeSessionMapper extends BaseMapper<PracticeSession> {
      * @return 汇总结果；会话下没有任何作答时各项为 0
      */
     SessionSummary selectAnswerSummary(@Param("sessionId") Long sessionId);
+
+    /**
+     * 练习历史<b>分页</b>查询（带来源文章标题）。
+     *
+     * <p><b>为什么要 JOIN {@code passage}</b>：列表里只显示「阅读练习 · 2 题 · 1 分」
+     * 无法让人回忆起是哪一篇；带上标题（如 {@code Community Gardens}）才有辨识度。
+     * 因为是多表 JOIN，按项目规范进 XML。
+     *
+     * <p>注意翻译题练习的 {@code passage_id} 为 NULL，因此必须用
+     * {@code LEFT JOIN}，否则翻译练习会被整条过滤掉。
+     *
+     * @param page   分页参数，由 MyBatis-Plus 插件读取并回填 total
+     * @param userId 用户 id
+     * @return 分页结果；{@code resultType} 为 {@code dto.query.PracticeHistoryItem}，XML 里写全限定名
+     */
+    IPage<PracticeHistoryItem> selectHistoryPage(IPage<PracticeHistoryItem> page,
+                                                 @Param("userId") Long userId);
 }

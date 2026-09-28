@@ -57,4 +57,53 @@
          LIMIT #{limit}
     </select>
 
+    <!--
+      错题本分页查询。四张表 JOIN，属复杂操作，写 XML。
+
+      两条过滤条件是本接口的安全与正确性核心：
+
+        1. s.status = 'FINISHED'
+           只收【已交卷】会话里的错题。否则练习进行中就能通过这个接口
+           拿到正确答案与解析，等于绕开结果页提前看答案（违反红线 2）。
+           这不是「顺手加的」，去掉它这个接口就是漏洞。
+
+        2. a.is_correct = 0
+           刻意不写 a.is_correct != 1。翻译题在评分完成前 is_correct 是 NULL，
+           而 SQL 里 NULL != 1 的结果是 NULL（不是 true），
+           更危险的是有人会写成 is_correct <> 1 OR is_correct IS NULL ——
+           那会把「还没判分」的记录也当成错题收进来。
+           「没判分」和「做错了」是两回事。
+
+      LEFT JOIN question_option 取正确选项：
+        条件里带 is_correct = 1，因此对翻译题（没有选项行）只会 JOIN 出 NULL，
+        正好让 correct_option_key 保持为空，不需要额外 CASE 判断题型。
+
+      resultType 写全限定名（dto.query 包不在 type-aliases-package 下）。
+    -->
+    <select id="selectWrongPage" resultType="org.example.englishquestionbank.dto.query.WrongQuestionItem">
+        SELECT a.id             AS answer_record_id,
+               a.session_id,
+               a.question_id,
+               a.user_answer,
+               a.answered_at,
+               q.question_type,
+               q.stem,
+               q.source_text,
+               q.reference_answer,
+               q.analysis,
+               q.passage_id,
+               p.title          AS passage_title,
+               qo.option_key    AS correct_option_key
+          FROM answer_record a
+          JOIN practice_session s ON s.id = a.session_id
+          JOIN question q         ON q.id = a.question_id
+          LEFT JOIN passage p        ON p.id = q.passage_id
+          LEFT JOIN question_option qo
+                 ON qo.question_id = q.id AND qo.is_correct = 1
+         WHERE a.user_id = #{userId}
+           AND a.is_correct = 0
+           AND s.status = 'FINISHED'
+         ORDER BY a.answered_at DESC
+    </select>
+
 </mapper>

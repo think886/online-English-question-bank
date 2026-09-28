@@ -1,11 +1,14 @@
 package org.example.englishquestionbank.service.impl;
 
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.example.englishquestionbank.dto.PageResult;
 import org.example.englishquestionbank.dto.PracticeContent;
 import org.example.englishquestionbank.dto.PracticeResult;
 import org.example.englishquestionbank.dto.SessionSummary;
+import org.example.englishquestionbank.dto.query.PracticeHistoryItem;
 import org.example.englishquestionbank.entity.AnswerRecord;
 import org.example.englishquestionbank.entity.Passage;
 import org.example.englishquestionbank.entity.PracticeSession;
@@ -23,6 +26,7 @@ import org.example.englishquestionbank.mapper.UserWordMarkMapper;
 import org.example.englishquestionbank.service.AnswerService;
 import org.example.englishquestionbank.service.PracticeSessionService;
 import org.example.englishquestionbank.service.WordMarkService;
+import org.example.englishquestionbank.support.Paging;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -325,6 +329,16 @@ public class PracticeSessionServiceImpl implements PracticeSessionService {
 
         return new PracticeResult(content, answerByQuestion, marksByQuestion,
                 wordMarkService.summarizeSessionMarks(userId, sessionId));
+    }
+
+    @Override
+    public PageResult<PracticeHistoryItem> listHistoryPage(Long userId, long page, long size) {
+        if (userId == null) {
+            throw new IllegalArgumentException("userId 不能为空");
+        }
+        IPage<PracticeHistoryItem> result = practiceSessionMapper.selectHistoryPage(
+                Paging.of(page, size), userId);
+        return Paging.toResult(result);
     }
 
     /** 会话必须属于该用户；否则抛 {@link IllegalStateException}（映射为 HTTP 403 更贴切，见 backlog B-12）。 */

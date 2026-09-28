@@ -1,11 +1,14 @@
 package org.example.englishquestionbank.service.impl;
 
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.example.englishquestionbank.dto.MarkCommand;
 import org.example.englishquestionbank.dto.MarkResult;
 import org.example.englishquestionbank.dto.MarkedWordSummary;
+import org.example.englishquestionbank.dto.PageResult;
+import org.example.englishquestionbank.dto.query.VocabItem;
 import org.example.englishquestionbank.entity.PracticeSession;
 import org.example.englishquestionbank.entity.UserVocabulary;
 import org.example.englishquestionbank.entity.UserWordMark;
@@ -15,6 +18,7 @@ import org.example.englishquestionbank.mapper.SessionQuestionMapper;
 import org.example.englishquestionbank.mapper.UserVocabularyMapper;
 import org.example.englishquestionbank.mapper.UserWordMarkMapper;
 import org.example.englishquestionbank.mapper.WordMapper;
+import org.example.englishquestionbank.support.Paging;
 import org.example.englishquestionbank.support.WordFormNormalizer;
 import org.example.englishquestionbank.service.WordMarkService;
 import org.springframework.stereotype.Service;
@@ -265,5 +269,17 @@ public class WordMarkServiceImpl implements WordMarkService {
                             .filter(Objects::nonNull).findFirst().orElse(null)));
         }
         return summaries;
+    }
+
+    @Override
+    public PageResult<VocabItem> listVocabularyPage(Long userId, long page, long size) {
+        if (userId == null) {
+            throw new IllegalArgumentException("userId 不能为空");
+        }
+        // Paging.of 会归一化页码与每页条数 —— 尤其是 size<=0 时
+        // MyBatis-Plus 会「不做分页、返回全表」，必须在入口挡住。见 Paging 的类注释。
+        IPage<VocabItem> result = userVocabularyMapper.selectVocabPage(
+                Paging.of(page, size), userId);
+        return Paging.toResult(result);
     }
 }

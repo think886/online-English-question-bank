@@ -19,6 +19,7 @@
 | 第 10 次 | 2026-09-22 | 4.4 节登记 `answer_record` 与 `practice_session` 的 3 条语句（含「统计增量可负」的差值语义） |
 | 第 11 次 | 2026-09-26 | 4.4 节登记 2 条聚合语句；新增 4.6 节记录「`resultType` 短名只对 `entity` 包生效」这一实测踩到的坑 |
 | 第 12 次 | 2026-09-26 | 4.4 节登记 `QuestionMapper.xml` 的 `selectByTypeWithLimit`（翻译题组卷用） |
+| 第 13 次 | 2026-09-28 | 实体清单 11 → **12 个**（新增 `UserToken`）；新增「行映射类型」说明（`dto.query.*`，**必须写全限定名且不能用 record**）；新增决定 3（令牌只存 SHA-256）；第二节补分页插件与 `mybatis-plus-jsqlparser` 的说明；4.4 节登记 3 条分页查询语句 |
 
 ---
 
@@ -85,12 +86,13 @@ public class Word {
 | `DATETIME` | `LocalDateTime` | |
 | `DECIMAL` | `BigDecimal` | 如 `translation_grading` 的各项得分 |
 
-### 实体清单（11 个，全部完成）
+### 实体清单（12 个，全部完成）
 
 | 实体 | 表 | 映射列数 / 实际列数 | 说明 |
 |---|---|---|---|
 | `Word` | `word` | 19 / 19 | 单词词典 |
 | `SysUser` | `sys_user` | 10 / 10 | 用户 |
+| `UserToken` | `user_token` | 7 / 7 | **登录令牌（第 13 次修订新增）**；见下方决定 3 |
 | `Passage` | `passage` | 11 / 11 | 阅读文章 |
 | `Question` | `question` | 13 / 13 | 题目（阅读 + 翻译同表，按 `question_type` 区分） |
 | `QuestionOption` | `question_option` | 6 / 6 | 选择题选项 |
@@ -103,10 +105,20 @@ public class Word {
 
 > 「映射列数 / 实际列数」不是估算，是 `EntityMappingChecker` 启动时与
 > `information_schema` 实际比对得出的结果。
+>
+> ⚠️ `EntityMappingChecker` 是**按 `entity` 包全量扫描**的，新增 `UserToken`
+> 之后它会自动纳入检查，无需改代码。
+
+**另有 3 个「行映射类型」不在 `entity` 包**（第 13 次修订新增）：
+`dto.query.VocabItem`、`dto.query.WrongQuestionItem`、`dto.query.PracticeHistoryItem`。
+它们是为 JOIN 查询结果准备的，**不是表实体**，因此：
+- 放在 `dto.query` 子包，`type-aliases-package` 覆盖不到 → XML 里 **必须写全限定名**
+- 用 **`@Data` 类而不是 record** —— MyBatis 靠 setter 注入列值，record 没有 setter；
+  若改用 record 就必须按构造器参数顺序映射，SQL 列顺序一变就**静默错位**（不报错）
 
 ---
 
-## 三、两个刻意的设计决定
+## 三、三个刻意的设计决定
 
 ### 决定 1：`user_word_mark` 的生成列**不映射进实体**
 
@@ -124,6 +136,24 @@ public class Word {
 
 **不用的理由**：两套机制并存会导致「这个值到底是谁写的」无法排查。统一交给数据库负责。
 因此实体里**不要**加 `@TableField(fill = FieldFill.INSERT)`。
+
+### 决定 3：登录令牌**只存 SHA-256**，且刻意不用 BCrypt（第 13 次修订新增）
+
+`user_token.token_hash` 存的是令牌的 SHA-256 十六进制（64 字符），**不是令牌本身**。
+
+**为什么不能存明文**：令牌等价于密码 —— 谁拿到它就能冒充该用户。
+明文入库意味着一次拖库或一份备份泄漏就等于所有在线用户被接管。
+
+**为什么用 SHA-256 而不是 BCrypt**：密码用 BCrypt 是因为口令熵低、必须靠「慢」来拖垮爆破；
+而令牌是 **32 字节（256 位）随机串**，爆破在物理上不可行，慢没有任何收益。
+反过来，令牌**每个 API 请求都要校验一次**，用 BCrypt 会给每次请求平白加上几十毫秒。
+**高熵随机值的正确做法就是快速哈希。**
+
+**为什么字段名叫 `tokenHash` 而不是 `token`**：名字本身是防呆 ——
+看到 `token` 很容易有人顺手写成 `setToken(rawToken)`。叫 `tokenHash` 就会先愣一下。
+
+> 验证方式：冒烟测试用 MySQL 的 `SHA2(token, 256)` **独立算一遍**再回表比对。
+> 这验证的不是「存了点什么」，而是 Java 侧 SHA-256 十六进制实现（含补零）与标准算法一致。
 
 ---
 

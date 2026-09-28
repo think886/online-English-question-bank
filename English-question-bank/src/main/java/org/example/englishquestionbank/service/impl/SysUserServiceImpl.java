@@ -6,6 +6,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.example.englishquestionbank.entity.SysUser;
 import org.example.englishquestionbank.mapper.SysUserMapper;
 import org.example.englishquestionbank.service.SysUserService;
+import org.example.englishquestionbank.support.PasswordHasher;
 import org.springframework.stereotype.Service;
 
 /**
@@ -24,6 +25,7 @@ public class SysUserServiceImpl implements SysUserService {
     private static final int MAX_USERNAME_LENGTH = 64;
 
     private final SysUserMapper sysUserMapper;
+    private final PasswordHasher passwordHasher;
 
     @Override
     public SysUser register(String username, String nickname) {
@@ -44,7 +46,9 @@ public class SysUserServiceImpl implements SysUserService {
         user.setRole("USER");
         user.setUserType(1);   // 1 = 注册用户
         user.setStatus(1);     // 1 = 正常
-        // passwordHash 故意留空：登录鉴权尚未实现
+        // passwordHash 留空：本方法只负责「建账号」。
+        // 密码由调用方通过 setPassword() 显式设置 —— 这样「新用户没有密码」是个
+        // 明确的状态（登录时会被当成凭据错误），而不是被某个默认密码掩盖过去。
         // createdAt / updatedAt 由数据库 DEFAULT CURRENT_TIMESTAMP 填充，实体不设置
 
         // ---- 3. 插入 ----
@@ -88,5 +92,28 @@ public class SysUserServiceImpl implements SysUserService {
         // 用 count 而不是 selectOne：只关心存在性，不必把整行查出来
         return sysUserMapper.selectCount(
                 Wrappers.<SysUser>lambdaQuery().eq(SysUser::getUsername, username.trim())) > 0;
+    }
+
+    @Override
+    public void setPassword(Long userId, String rawPassword) {
+        if (userId == null) {
+            throw new IllegalArgumentException("userId 不能为空");
+        }
+        if (rawPassword == null || rawPassword.isEmpty()) {
+            throw new IllegalArgumentException("密码不能为空");
+        }
+
+        // 用 updateById + 实体：MyBatis-Plus 默认只更新非 null 字段，
+        // 因此这里不会误改 username / role / status 等列。
+        SysUser update = new SysUser();
+        update.setId(userId);
+        update.setPasswordHash(passwordHasher.hash(rawPassword));
+        int rows = sysUserMapper.updateById(update);
+        if (rows == 0) {
+            // 影响 0 行说明 id 不存在。静默成功会让「给不存在的用户设密码」看起来正常，
+            // 等到登录时才暴露，排查成本高得多。
+            throw new IllegalArgumentException("用户不存在: userId=" + userId);
+        }
+        log.debug("已设置密码 userId={}（已 BCrypt 哈希，明文未落库）", userId);
     }
 }

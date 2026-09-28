@@ -1,9 +1,12 @@
 package org.example.englishquestionbank.service.impl;
 
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.example.englishquestionbank.dto.AnswerResult;
+import org.example.englishquestionbank.dto.PageResult;
+import org.example.englishquestionbank.dto.query.WrongQuestionItem;
 import org.example.englishquestionbank.entity.AnswerRecord;
 import org.example.englishquestionbank.entity.PracticeSession;
 import org.example.englishquestionbank.entity.Question;
@@ -15,6 +18,7 @@ import org.example.englishquestionbank.mapper.QuestionMapper;
 import org.example.englishquestionbank.mapper.QuestionOptionMapper;
 import org.example.englishquestionbank.mapper.SessionQuestionMapper;
 import org.example.englishquestionbank.service.AnswerService;
+import org.example.englishquestionbank.support.Paging;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -180,5 +184,17 @@ public class AnswerServiceImpl implements AnswerService {
     /** 把 {@code is_correct} 的三种取值（null / 0 / 1）折算成 0 或 1。 */
     private static int isCorrectFlag(Integer isCorrect) {
         return Integer.valueOf(1).equals(isCorrect) ? 1 : 0;
+    }
+
+    @Override
+    public PageResult<WrongQuestionItem> listWrongPage(Long userId, long page, long size) {
+        if (userId == null) {
+            throw new IllegalArgumentException("userId 不能为空");
+        }
+        // 注意：「只取已交卷会话」与「is_correct = 0」两条过滤都在 XML 的 SQL 里，
+        // 刻意不在这里补条件 —— 安全约束写在数据访问层，才不会被调用方绕过。
+        IPage<WrongQuestionItem> result = answerRecordMapper.selectWrongPage(
+                Paging.of(page, size), userId);
+        return Paging.toResult(result);
     }
 }

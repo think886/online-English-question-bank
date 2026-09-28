@@ -3,6 +3,8 @@ package org.example.englishquestionbank.service;
 import org.example.englishquestionbank.dto.MarkCommand;
 import org.example.englishquestionbank.dto.MarkResult;
 import org.example.englishquestionbank.dto.MarkedWordSummary;
+import org.example.englishquestionbank.dto.PageResult;
+import org.example.englishquestionbank.dto.query.VocabItem;
 import org.example.englishquestionbank.entity.UserVocabulary;
 import org.example.englishquestionbank.entity.UserWordMark;
 
@@ -96,4 +98,23 @@ public interface WordMarkService {
      * @return 去重后的标记词摘要，按文本位置排序；没有任何标记时返回空列表
      */
     List<MarkedWordSummary> summarizeSessionMarks(Long userId, Long sessionId);
+
+    /**
+     * 生词本<b>分页</b>查询 —— 带词典释义、音标、考纲标签。
+     *
+     * <p>与 {@link #listVocabulary} 的区别：后者是「取前 N 条」的内部方法
+     * （返回实体，不含词典信息），本方法是给前端清单页用的对外能力 ——
+     * 有总数、能翻页、条目里已经补好释义。
+     *
+     * <p><b>页码与每页条数会被归一化</b>：{@code page < 1} 按 1 处理，
+     * {@code size < 1} 按 {@code 20} 处理，{@code size > 100} 按 100 处理。
+     * 归一化后实际生效的值可从返回的 {@link PageResult#size()} 读到。
+     *
+     * @param userId 用户 id
+     * @param page   页码，从 1 开始
+     * @param size   每页条数
+     * @return 分页结果，按最后标记时间倒序
+     * @throws IllegalArgumentException userId 为空
+     */
+    PageResult<VocabItem> listVocabularyPage(Long userId, long page, long size);
 }
